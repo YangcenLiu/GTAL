@@ -18,7 +18,7 @@ parser.add_argument('--max_iter', type=int, default=20000, help='maximum iterati
 parser.add_argument('--feature_type', type=str, default='I3D',
                     help='type of feature to be used I3D or UNT (default: I3D)')
 parser.add_argument('--use_model', type=str, default='DELU', help='model used to train the network')
-parser.add_argument('--interval', type=int, default=200, help='time interval of performing the test')
+parser.add_argument('--eval_interval', type=int, default=200, help='time interval of performing the test')
 parser.add_argument('--similar_size', type=int, default=2)
 
 parser.add_argument('--weight_decay', type=float, default=5e-4)
@@ -53,3 +53,22 @@ parser.add_argument("--alpha_edl", type=float, default=1)
 parser.add_argument("--rat_atn", type=int, default=9)
 parser.add_argument("--amplitude", type=float, default=0.7)
 parser.add_argument("--alpha_uct_guide", type=float, default=0.4)
+
+# -------------adv attack---------------
+parser.add_argument("--adv_attack", action="store_true", default=False)
+parser.add_argument("--epsilon", type=float, default=1e-5, help="epsilon for attack")
+parser.add_argument("--num_pgd_iter", type=int, default=40)
+
+# random resize
+parser.add_argument("--random_resize", action="store_true", default=False)
+parser.add_argument("--resize_min_ratio", type=float, default=0.5)
+parser.add_argument("--resize_max_ratio", type=float, default=1.5)
+
+# -------------ood test-----------------
+parser.add_argument("--model_num_classes", type=int, default=20)
+parser.add_argument("--class_mapping", type=str, default="t2a_class_mapping.json")
+
+
+# -------------sub_class setting-----------------
+parser.add_argument("--num_sub_class", type=int, default=50) # description="total number of visual concepts"
+parser.add_argument("--num_memory_bank_size", type=int, default=100) # maximum number of snippet feature memorized for a sub_class

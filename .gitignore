@@ -1,0 +1,4 @@
+ckpt/
+*.log
+temp/
+__pycache__/

@@ -215,7 +215,7 @@ class SampleDataset:
 
 
 class AntSampleDataset:
-    def __init__(self, args, mode="both", sampling='random'):
+    def __init__(self, args, mode="both", sampling='random', classwise_feature_mapping=True):
         self.dataset_name = args.dataset_name
         self.num_class = args.num_class
         self.sampling = sampling
@@ -263,7 +263,8 @@ class AntSampleDataset:
         except:
             ambilist = []
         self.train_test_idx()
-        self.classwise_feature_mapping()
+        if classwise_feature_mapping:
+            self.classwise_feature_mapping()
 
         self.normalize = False
         self.mode = mode
@@ -305,7 +306,7 @@ class AntSampleDataset:
                         break
             self.classwiseidx.append(idx)
 
-    def load_data(self, n_similar=0, is_training=True, similar_size=2):
+    def load_data(self, n_similar=0, return_label_names: bool = False, is_training=True, similar_size=2):
         if is_training:
             labels = []
             idx = []
@@ -361,6 +362,8 @@ class AntSampleDataset:
             feat = self.features[self.testidx[self.currenttestidx]]
             # feat = utils.process_feat(feat, normalize=self.normalize)
             # feature = feature[sample_idx]
+
+            label_names = self.labels[self.testidx[self.currenttestidx]]
             vn = self.videonames[self.testidx[self.currenttestidx]]
             if self.currenttestidx == len(self.testidx) - 1:
                 done = True
@@ -373,7 +376,10 @@ class AntSampleDataset:
                 feat = feat[..., : self.feature_size]
             elif self.mode == "flow":
                 feat = feat[..., self.feature_size:]
-            return feat, np.array(labs), vn, done
+            if return_label_names:
+                return feat, np.array(labs), vn, done, label_names
+            else:
+                return feat, np.array(labs), vn, done
 
     def random_avg(self, x, segm=None):
         if len(x) < self.num_segments:

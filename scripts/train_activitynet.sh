@@ -10,7 +10,7 @@ python main.py \
 --alpha2 0.8 \
 --rat_atn 5 \
 --k 5 \
---interval 20 \
+--eval_interval 20 \
 --dataset_name ActivityNet1.2 \
 --path_dataset /data0/lixunsong/Datasets/ActivityNet1.2 \
 --num_class 100 \

@@ -107,17 +107,19 @@ class ANETdetection(object):
         args=None,
         subset="test",
         # verbose=False
-        verbose=True
+        verbose=True,
+        selected_class_indices=None,
     ):
         self.subset = subset
         self.args = args
         self.tiou_thresholds = tiou_thresholds
         self.verbose = verbose
+        self.selected_class_indices = selected_class_indices
         self.ap = None
         self.annotation_path = os.path.join(args.path_dataset,annotation_path)
         self.prediction = None
         self._import_ground_truth(self.annotation_path)
-
+        print("Ground truth imported.")
         #####
 
     def _import_ground_truth(self, annotation_path):
@@ -173,20 +175,38 @@ class ANETdetection(object):
                 t_start_lst.append(round(gtsegments[i][j][0]*25/16))
                 t_end_lst.append(round(gtsegments[i][j][1]*25/16))
                 label_lst.append(str2ind(gtlabels[i][j], self.classlist))
-        ground_truth = pd.DataFrame(
-            {
-                "video-id": video_lst,
-                "t-start": t_start_lst,
-                "t-end": t_end_lst,
-                "label": label_lst,
-            }
-        )
+        
+        if self.selected_class_indices is not None:
+            selected_indices = [idx for idx, item in enumerate(label_lst) if item in self.selected_class_indices]
+            ground_truth = pd.DataFrame(
+                {
+                    "video-id": [video_lst[idx] for idx in selected_indices],
+                    "t-start": [t_start_lst[idx] for idx in selected_indices],
+                    "t-end": [t_end_lst[idx] for idx in selected_indices],
+                    "label": [label_lst[idx] for idx in selected_indices],
+                }
+            )
+            self.activity_index = {}
+            i = 0
+            for idx in templabelidx:
+                if idx in self.selected_class_indices:
+                    self.activity_index[i] = idx
+                    i += 1
+        else:
+            ground_truth = pd.DataFrame(
+                {
+                    "video-id": video_lst,
+                    "t-start": t_start_lst,
+                    "t-end": t_end_lst,
+                    "label": label_lst,
+                }
+            )
+            self.activity_index = {i: templabelidx[i] for i in range(len(templabelidx))}        
         self.ground_truth = ground_truth
-        self.activity_index = {i:templabelidx[i] for i in range(len(templabelidx))}
+        self.video_duration_dict = dict(zip(videoname, duration))
 
     def get_topk_mean(self, x, k, axis=0):
         return np.mean(np.sort(x, axis=axis)[-int(k):, :], axis=0)
-
 
     def _get_vid_score(self, pred):
         # pred : (n, class)
@@ -210,7 +230,8 @@ class ANETdetection(object):
         return pred, c_s
 
     def _get_vid_score_1(self, p):
-        pp = - p; [pp[:,i].sort() for i in range(np.shape(pp)[1])]; pp=-pp
+        pp = - p
+        [pp[:,i].sort() for i in range(np.shape(pp)[1])]; pp=-pp
         if int(np.shape(pp)[0]/8)>0:
             c_s = np.mean(pp[:int(np.shape(pp)[0]/8),:],axis=0)
         else:
@@ -284,7 +305,7 @@ class ANETdetection(object):
             for label_name, cidx in self.activity_index.items()
         )
 
-        for i, cidx in enumerate(self.activity_index.values()):
+        for i, cidx in enumerate(self.activity_index.keys()):
             ap[:, cidx] = results[i]
 
         return ap
@@ -323,6 +344,7 @@ class ANETdetection(object):
         }
         with open(fname, 'wb') as fp:
             pickle.dump(Dat, fp)
+
 
 
 
