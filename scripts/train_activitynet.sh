@@ -1,6 +1,3 @@
-#!/usr/bin/env bash
-cd ..
-
 python main.py \
 --model_name DELU_ACT \
 --seed 0 \
@@ -18,4 +15,5 @@ python main.py \
 --dataset AntSampleDataset \
 --lr 3e-5 \
 --max_seqlen 60 \
---max_iter 22000
+--max_iter 22000 \
+--class_mapping a2t_class_mapping.json

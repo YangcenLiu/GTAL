@@ -61,10 +61,11 @@ if __name__ == '__main__':
     total_loss = 0
     lrs = [args.lr, args.lr / 5, args.lr / 5 / 5]
     print(model)
-    for itr in tqdm(range(args.max_iter)):
+    for itr in tqdm(range(args.max_iter), ncols=80):
         loss = train(itr, dataset, args, model, optimizer, device)
         total_loss += loss
         if itr % args.eval_interval == 0 and not itr == 0:
+            print("")
             print('Iteration: %d, Loss: %.5f' % (itr, total_loss / args.eval_interval))
             total_loss = 0
             torch.save(model.state_dict(), ckpt_path + '/last_' + args.model_name + '.pkl')
@@ -89,6 +90,7 @@ if __name__ == '__main__':
                 args.dataset = "AntSampleDataset"
                 args.num_class = 100
                 args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+                args.max_seqlen = 60
 
                 if ood_dataset is None:
                     ood_dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
@@ -105,6 +107,7 @@ if __name__ == '__main__':
                 args.dataset = ("SampleDataset",)
                 args.num_class = 20
                 args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
+                args.max_seqlen = 320
 
                 # cond = np.mean(ood_dmap) > np.mean(ood_max_map)
                 if cond:
@@ -119,6 +122,46 @@ if __name__ == '__main__':
                 )
                 ood_max_map = np.array(ood_max_map)
                 print('mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+            
+            if "activitynet" in args.dataset_name.lower():  # only support thumos14 for now
+
+                args.dataset_name = "Thumos14reduced"
+                args.dataset = "SampleDataset"
+                args.num_class = 20
+                args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
+                args.max_seqlen = 320
+
+                if ood_dataset is None:
+                    ood_dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+                ood_iou, ood_dmap, ood_mAP_Avg_ALL = ood_test(
+                    ood_dataset,
+                    args,
+                    model,
+                    device,
+                    class_mapping=args.class_mapping,
+                    save_activation=False,
+                    itr=itr,
+                )
+                
+                args.dataset_name = "ActivityNet1.2"
+                args.dataset = "AntSampleDataset"
+                args.num_class = 100
+                args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+                args.max_seqlen = 60
+
+                # cond = np.mean(ood_dmap) > np.mean(ood_max_map)
+                if cond:
+                    ood_max_map = ood_dmap
+                print(
+                "||".join(
+                    [
+                        "MAX map @ {} = {:.3f} ".format(ood_iou[i], ood_max_map[i] * 100)
+                        for i in range(len(ood_iou))
+                    ]
+                    )
+                )
+                ood_max_map = np.array(ood_max_map)
+                print('mAP Avg 0.1-0.7: {}'.format(np.mean(ood_max_map[:7]) * 100))
             
             
             print("------------------pid: {}--------------------".format(os.getpid()))

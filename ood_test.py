@@ -66,7 +66,7 @@ def dataframe_to_json(
         json.dump({"results": results}, file)
 
 
-def convert_one_hot_label(label, class_mapper, num_classes: int = 21):
+def convert_one_hot_label(label, class_mapper, num_classes):
     nonzeros = label.nonzero()
     video_indices = list(nonzeros[0])
     class_indices = list(nonzeros[1])
@@ -92,17 +92,29 @@ def ood_test(
     class_mapping_param=None,
     threshold=0.9 # threshold for pseudo label
 ):
-    if class_mapping and class_mapping_param==None:
+    if class_mapping and class_mapping_param==None: # 走的上分支
         class_mapping = json.load(open(class_mapping, "r"))
-        target_class_names = [v["anet name"] for v in class_mapping.values()]
-        target_class_indices = [
-            int(item["anet idx"]) for item in class_mapping.values()
-        ]
-        source_class_indices = [int(k) for k in class_mapping.keys()] # [3, 10, 11, 12, 13, 14, 15, 18]
-        idx_mapping = {int(k): int(v["anet idx"]) for k, v in class_mapping.items()} # Thumos->Anet
-        reversed_idx_mapping = {
-            int(v["anet idx"]): int(k) for k, v in class_mapping.items()
-        } # Anet->Thumos
+
+        if "ActivityNet" in args.dataset_name: #Thumos->Anet
+            target_class_names = [v["anet name"] for v in class_mapping.values()]
+            target_class_indices = [
+                int(item["anet idx"]) for item in class_mapping.values()
+            ]
+            source_class_indices = [int(k) for k in class_mapping.keys()] # [3, 10, 11, 12, 13, 14, 15, 18]
+            idx_mapping = {int(k): int(v["anet idx"]) for k, v in class_mapping.items()} # Thumos->Anet
+            reversed_idx_mapping = {
+                int(v["anet idx"]): int(k) for k, v in class_mapping.items()
+            }
+        elif "Thumos" in args.dataset_name:  # Anet->Thumos
+            target_class_names = [v["thu name"] for v in class_mapping.values()]
+            target_class_indices = [
+                int(item["thu idx"]) for item in class_mapping.values()
+            ]
+            source_class_indices = [int(k) for k in class_mapping.keys()] # [3, 10, 11, 12, 13, 14, 15, 18]
+            idx_mapping = {int(k): int(v["thu idx"]) for k, v in class_mapping.items()} # Thumos->Anet
+            reversed_idx_mapping = {
+                int(v["thu idx"]): int(k) for k, v in class_mapping.items()
+            }
     else:
         if class_mapping_param==None:
             raise Exception("no class mapping parameters!")
@@ -216,13 +228,19 @@ def ood_test(
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
 
+    '''
     if args.dataset_name == "Thumos14":
         test_set = sio.loadmat("test_set_meta.mat")["test_videos"][0]
         for i in range(np.shape(labels_stack)[0]):
             if test_set[i]["background_video"] == "YES":
                 labels_stack[i, :] = np.zeros_like(labels_stack[i, :])
+    '''
 
-    labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
+    if "ActivityNet" in args.dataset_name:
+        labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
+    elif "Thumos14" in args.dataset_name:
+        labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101)
+
     instance_logits_stack = np.take(instance_logits_stack, source_class_indices, axis=1) # 193,8
     labels_stack = np.take(labels_stack, source_class_indices, axis=1)
 

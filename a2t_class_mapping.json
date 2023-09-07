@@ -1,0 +1,42 @@
+{
+    "10": {
+        "thu idx": "3",
+        "thu name": "CleanAndJerk",
+        "anet name": "Clean and jerk"
+    },
+    "29": {
+        "thu idx": "10",
+        "thu name": "HammerThrow",
+        "anet name": "Hammer throw"
+    },
+    "31": {
+        "thu idx": "11",
+        "thu name": "HighJump",
+        "anet name": "High jump"
+    },
+    "35": {
+        "thu idx": "12",
+        "thu name": "JavelinThrow",
+        "anet name": "Javelin throw"
+    },
+    "38": {
+        "thu idx": "13",
+        "thu name": "LongJump",
+        "anet name": "Long jump"
+    },
+    "63": {
+        "thu idx": "14",
+        "thu name": "PoleVault",
+        "anet name": "Pole vault"
+    },
+    "74": {
+        "thu idx": "15",
+        "thu name": "Shotput",
+        "anet name": "Shot put"
+    },
+    "15": {
+        "thu idx": "18",
+        "thu name": "ThrowDiscus",
+        "anet name": "Discus throw"
+    }
+}
