@@ -6,7 +6,6 @@ import pandas as pd
 import scipy.io as sio
 import torch
 import torch.nn.functional as F
-import wandb
 from torch.autograd import Variable
 
 import model
@@ -84,10 +83,6 @@ def test(itr, dataset, args, model, device):
     print('mAP Avg ALL: {:.3f}'.format(sum(dmap) / len(iou) * 100))
 
     utils.write_to_file(args.dataset_name, dmap, cmap, itr)
-
-    if not args.without_wandb:
-        wandb.log({'mAP Avg 0.1-0.7': np.mean(dmap[:7]) * 100,
-                   'classification map': cmap})
 
     return iou, dmap
 

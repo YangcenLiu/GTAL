@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import wandb
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
@@ -21,9 +20,5 @@ def train(itr, dataset, args, model, optimizer, device):
     optimizer.zero_grad()
     total_loss.backward()
     optimizer.step()
-
-    if not args.without_wandb:
-        if itr % 20 == 0 and itr != 0:
-            wandb.log(loss_dict)
 
     return total_loss.data.cpu().numpy()

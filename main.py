@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 import torch
-import wandb
+
 from tqdm import tqdm
 
 import model
@@ -33,13 +33,6 @@ import torch.optim as optim
 
 if __name__ == '__main__':
     args = options.parser.parse_args()
-
-    if not args.without_wandb:
-        wandb.init(
-            name=time.asctime()[:-4] + args.model_name,
-            config=args,
-            project=f"DELU_{args.dataset}",
-            sync_tensorboard=True)
 
     seed = args.seed
     print('=============seed: {}, pid: {}============='.format(seed, os.getpid()))
@@ -80,9 +73,6 @@ if __name__ == '__main__':
             if cond:
                 torch.save(model.state_dict(), ckpt_path + '/best_' + args.model_name + '.pkl')
                 max_map = dmap
-
-            if not args.without_wandb:
-                wandb.log({'MAX mAP Avg 0.1-0.7': np.mean(max_map[:7]) * 100})
 
             print('||'.join(['MAX map @ {} = {:.3f} '.format(iou[i], max_map[i] * 100) for i in range(len(iou))]))
             max_map = np.array(max_map)

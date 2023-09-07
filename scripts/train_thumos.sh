@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-cd ..
-
 python main.py \
 --model_name DELU \
 --seed 0 \
@@ -13,7 +11,7 @@ python main.py \
 --lr 0.00005 \
 --k 7 \
 --dataset_name Thumos14reduced \
---path_dataset /path/to/CO2-THUMOS-14 \
+--path_dataset /data0/lixunsong/Datasets/THUMOS14 \
 --num_class 20 \
 --use_model DELU \
 --max_iter 5000 \

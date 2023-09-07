@@ -12,7 +12,7 @@ python main.py \
 --k 5 \
 --interval 20 \
 --dataset_name ActivityNet1.2 \
---path_dataset /path/to/CO2-ActivityNet-12 \
+--path_dataset /data0/lixunsong/Datasets/ActivityNet1.2 \
 --num_class 100 \
 --use_model DELU_ACT \
 --dataset AntSampleDataset \
