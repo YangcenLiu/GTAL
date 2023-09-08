@@ -46,8 +46,8 @@ if __name__ == '__main__':
         ood_max_map = [0] * 10
     else:
         max_map = [0] * 10
-    log_model_path = os.path.join(args.path_dataset, 'logs', args.model_name)
-    ckpt_path = os.path.join(args.path_dataset, 'ckpt')
+    log_model_path = os.path.join(args.work_dir, 'logs', args.model_name)
+    ckpt_path = os.path.join(args.work_dir, 'ckpt')
     if not os.path.exists(ckpt_path):
         os.makedirs(ckpt_path)
     print(args)

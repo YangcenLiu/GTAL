@@ -25,6 +25,9 @@ parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--dataset', type=str, default='SampleDataset')
 parser.add_argument('--proposal_method', type=str, default='multiple_threshold_hamnet')
 
+parser.add_argument('--work_dir', type=str, default='work_dir') # to save all results
+parser.add_argument('--ckpt_path', type=str, default='ckpt/best_delu_tuhmos') # for test and ood_test only
+
 # for proposal genration
 parser.add_argument('--scale', type=float, default=1)
 parser.add_argument("--feature_fps", type=int, default=25)

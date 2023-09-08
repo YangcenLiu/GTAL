@@ -323,47 +323,31 @@ def ood_tta_test(dataset,
         dataset.pseudo_multihot *= 0
 
 if __name__ == "__main__":
-    parser = options.get_parser()
-    parser.add_argument(
-        "-ckpt", "--checkpoint", type=str, default="ckpt/best_delu_thumos.pkl"
-    )
-    args = parser.parse_args()
-
-    print("evluating checkpoint {}".format(args.checkpoint))
-
-    device = torch.device("cuda:7")
-    
-    dataset = getattr(wsad_dataset, args.dataset)(args, class_mapping=False)
-
-    feature_size = (
-        dataset.feature_size if args.modality == "fusion" else dataset.feature_size // 2
-    )
-    if args.modality == "fusion":
-        model = getattr(models, "DELU")( # 
-            feature_size, args.model_num_calsses, opt=args
-        ).to(device)
-    else:
-        model = getattr(single_stream_model, args.use_model)(
-            feature_size, args.model_num_calsses, opt=args
-        ).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"), strict=False)
-    print("Model loaded from {}".format(args.checkpoint))
+    args = options.parser.parse_args()
+    device = torch.device("cuda")
 
 
-    iou, dmap, mAP_Avg_ALL = ood_test(
-        dataset, args, model, device, class_mapping=args.class_mapping
-    )
-    
-    '''
-    iou, dmap = ood_tta_test(
-        dataset, args, model, device, class_mapping=args.class_mapping
-        )
-    '''
+    if "thumos" in args.dataset_name.lower():  # only support thumos14 for now
+        args.dataset_name = "ActivityNet1.2"
+        args.dataset = "AntSampleDataset"
+        args.num_class = 100
+        args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+        args.max_seqlen = 60
 
-    print(
-        "mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}".format(
-            np.mean(dmap[:5]) * 100, np.mean(dmap[:7]) * 100, np.mean(dmap) * 100
-        )
-    )
+    if "activitynet" in args.dataset_name.lower():  # only support thumos14 for now
 
-    # CUDA_VISIBLE_DEVICES=7 python ood_test.py  --path_dataset /data0/lixunsong/Datasets/ActivityNet1.2 --model_name DELU --alpha_edl 1.2 --alpha_uct_guide 0.2 --amplitude 0.2 --alpha2 0.8 --rat_atn 5 --k 5 --eval_interval 50 --dataset_name ActivityNet1.2 --num_class 20 --use_model DELU --dataset AntSampleDataset --lr 3e-5 --max_seqlen 60 --max_iter 22000 
+        args.dataset_name = "Thumos14reduced"
+        args.dataset = "SampleDataset"
+        args.num_class = 20
+        args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
+        args.max_seqlen = 320
+
+        dataset = getattr(wsad_dataset, args.dataset)(args)
+
+        model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+        model.load_state_dict(torch.load(args.ckpt_path))
+
+        iou, dmap = ood_test(-1, dataset, args, model, device)
+        print('mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
+                                                                                np.mean(dmap[:7]) * 100,
+                                                                                np.mean(dmap) * 100))

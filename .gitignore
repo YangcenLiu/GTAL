@@ -2,3 +2,4 @@ ckpt/
 *.log
 temp/
 __pycache__/
+work_dir/
