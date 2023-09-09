@@ -43,6 +43,8 @@ def test(itr, dataset, args, model, device):
             element_logits = outputs['cas']
             results[vn] = {'cas': outputs['cas'], 'attn': outputs['attn']}
             proposals.append(getattr(PM, args.proposal_method)(vn, outputs))
+            if isinstance(element_logits, list):
+                element_logits = torch.stack(element_logits, dim=0).mean(dim=0)
             logits = element_logits.squeeze(0)
         tmp = F.softmax(torch.mean(torch.topk(logits, k=int(np.ceil(len(features) / 8)), dim=0)[0], dim=0),
                         dim=0).cpu().data.numpy()

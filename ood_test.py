@@ -167,9 +167,12 @@ def ood_test(
         features = torch.from_numpy(features).float().to(device).unsqueeze(0)
         with torch.no_grad():
             outputs = model(features, is_training=False, seq_len=seq_len, opt=args, ood=True)
+            element_logits = outputs['cas']
             pred_proposals = getattr(PM, args.proposal_method)(vn, outputs) # multiple_threshold_hamnet
             proposals.append(pred_proposals)
-            logits = outputs["cas"].squeeze(0).detach().cpu()
+            if isinstance(element_logits, list):
+                element_logits = torch.stack(element_logits, dim=0).mean(dim=0)
+            logits = element_logits.squeeze(0).detach().cpu()
 
         tmp = (
             F.softmax(

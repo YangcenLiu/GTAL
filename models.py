@@ -8,6 +8,8 @@ import torch.nn.init as torch_init
 from edl_loss import EvidenceLoss
 from edl_loss import relu_evidence, exp_evidence, softplus_evidence
 
+from einops import rearrange, repeat, reduce
+
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 
@@ -643,24 +645,55 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
         self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
 
+        self.scales = args['opt'].scales
+
         self.feat_encoder = nn.Sequential(
             nn.Conv1d(n_feature, embed_dim, 3, padding=1), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
         self.fusion = nn.Sequential(
             nn.Conv1d(n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout_ratio),
-            nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
-            nn.Dropout(0.7), nn.Conv1d(embed_dim, n_class + 1, 1))
-        # self.cadl = CADL()
-        # self.attention = Non_Local_Block(embed_dim,mid_dim,dropout_ratio)
 
         self.channel_avg = nn.AdaptiveAvgPool1d(1)
         self.batch_avg = nn.AdaptiveAvgPool1d(1)
         self.ce_criterion = nn.BCELoss()
-        _kernel = ((args['opt'].max_seqlen // args['opt'].t) // 2 * 2 + 1)
-        self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
-            if _kernel is not None else nn.Identity()
+
+        self.pool = nn.ModuleList()
+        self.classifier = nn.ModuleList()
+        for _kernel in self.scales:
+            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+            self.classifier.append(
+                nn.Sequential(
+                    nn.Dropout(dropout_ratio),
+                    nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
+                    nn.Dropout(0.7), 
+                    nn.Conv1d(embed_dim, n_class + 1, 1)))
+
         self.apply(weights_init)
+    
+    def fpn_forward(self, x):
+ 
+        head_output=[]
+        current = self.pool[-1](x)
+        head_output.append(self.classifier[-1](current).transpose(-1, -2))
+
+        for i in range(len(self.scales)-2,-1,-1):
+            current = self.pool[i](x) # 这里后期再考虑各层配合
+            pre = current
+            head_output.append(self.classifier[i](current).transpose(-1, -2))
+
+        return list(reversed(head_output)) # 1,2,4,8...
+
+    def pool_forward(self, x):
+
+        head_output=[]
+        current = self.pool[-1](x)
+        head_output.append(current.transpose(-1, -2))
+
+        for i in range(len(self.scales)-2,-1,-1):
+            current = self.pool[i](x) # 这里后期再考虑各层配合
+            pre = current
+            head_output.append(current.transpose(-1, -2))
+
+        return list(reversed(head_output)) # 1,2,4,8...
 
     def forward(self, inputs, is_training=True, **args):
         feat = inputs.transpose(-1, -2)
@@ -671,17 +704,16 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         x_atn = (f_atn + v_atn) / 2
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
-        x_cls = self.classifier(nfeat)
-        x_cls = self.pool(x_cls)
-        x_atn = self.pool(x_atn)
-        f_atn = self.pool(f_atn)
-        v_atn = self.pool(v_atn)
+
+        x_cls = self.fpn_forward(nfeat)
+        x_atn = self.pool_forward(x_atn)
+        f_atn = self.pool_forward(f_atn)
+        v_atn = self.pool_forward(v_atn)
+
         # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
 
-        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
-                'v_atn': v_atn.transpose(-1, -2), 'f_atn': f_atn.transpose(-1, -2)}
-        # ,fg_mask.transpose(-1, -2), bg_mask.transpose(-1, -2),dropped_fg_mask.transpose(-1, -2)
-        # return att_sigmoid,att_logit, feat_emb, bag_logit, instance_logit
+        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls, 'attn': x_atn,
+                'v_atn': v_atn, 'f_atn': f_atn}
 
     def _multiply(self, x, atn, dim=-1, include_min=False):
         if include_min:
@@ -691,9 +723,38 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         return atn * (x - _min) + _min
 
     def criterion(self, outputs, labels, **args):
-        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
-        v_atn = outputs['v_atn']
-        f_atn = outputs['f_atn']
+        total_loss = 0.0  # Initialize the total loss
+        avg_loss_dict = {}  # Initialize the dictionary for averaging loss_dict elements
+
+        for scale in range(len(self.scales)):
+            single_scale_total_loss, single_scale_loss_dict = self.single_scale_criterion(scale, outputs, labels, args)
+            
+            # Accumulate the single_scale_total_loss
+            total_loss += single_scale_total_loss
+
+            # Aggregate elements from single_scale_loss_dict for averaging
+            for key, value in single_scale_loss_dict.items():
+                if key in avg_loss_dict:
+                    avg_loss_dict[key] += value
+                else:
+                    avg_loss_dict[key] = value
+
+        # Calculate the average loss
+        num_scales = float(len(self.scales))
+        avg_total_loss = total_loss / num_scales
+
+        # Average the elements in avg_loss_dict
+        for key in avg_loss_dict:
+            avg_loss_dict[key] /= num_scales
+
+        return avg_total_loss, avg_loss_dict
+        
+
+    def single_scale_criterion(self, scale, outputs, labels, args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'][scale], outputs['attn'][scale]
+        v_atn = outputs['v_atn'][scale]
+        f_atn = outputs['f_atn'][scale]
+        
         mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
         # learning weight dynamic, lambda1 (1-lambda1)
         b, n, c = element_logits.shape
@@ -932,3 +993,78 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         feat, element_logits, atn_supp, atn_drop, element_atn = outputs
 
         return element_logits, element_atn
+
+
+class CrossAttention(nn.Module):
+    def __init__(self, hidden_dim, value_mapping=True):
+        super(CrossAttention, self).__init__()
+
+        self.hidden_dim = hidden_dim
+
+        self.query = nn.Linear(hidden_dim, hidden_dim)
+        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.value_mapping = value_mapping
+        
+        if self.value_mapping:
+            self.value = nn.Linear(hidden_dim, hidden_dim)
+            self.fc_out = nn.Linear(hidden_dim, hidden_dim)
+
+        self.register_buffer("scale",torch.sqrt(torch.FloatTensor([hidden_dim])))
+
+    def forward(self, input_q, input_k, input_v=None):
+        Q = self.query(input_q)
+        K = self.key(input_k)
+
+        if self.value_mapping:
+            V = self.value(input_v)
+
+        energy = torch.matmul(Q, K.permute(1, 0)) / self.scale
+
+        attention = torch.softmax(energy, dim=-1)
+
+        if not self.value_mapping: # 直接返回attention
+            return attention
+
+        out = torch.matmul(attention, V)
+        out = out.contiguous()
+
+        out = self.fc_out(out)
+
+        return out, attention
+
+class NewSubclassBranch(nn.Module):
+    def __init__(self, num_sub_class=50, num_class=20):
+        super(NewSubclassBranch, self).__init__()
+
+        self.embed_dim = 2048
+        self.num_sub_class_per_class = num_sub_class
+        self.num_sub_class = num_sub_class # YZ: num_sub_class changed to the number of sub-classes in each class
+        self.num_class = num_class
+
+        self.register_buffer("sub_classtype", torch.randn((self.num_sub_class, self.embed_dim)))
+        self.register_buffer("class_type", torch.randn((self.num_class+1, self.embed_dim)))
+        self.register_buffer("fb_type", torch.randn((2, self.embed_dim)))
+
+        self.snippet_to_sub_mapping = CrossAttention(self.embed_dim, True) # 从snippet到子类的similarity matrix 以及subclass prototype的重表征
+        self.sub_to_fg_mapping = CrossAttention(self.embed_dim, False) # 从sub_class到前后景, 且只取2分类结果, 这里用主分支和otsu进行约束
+        self.sub_to_class_mapping = CrossAttention(self.embed_dim, False) # 从sub_classc到前景class
+    
+    def update(self):
+        pass
+
+    def forward(self, snippets):
+        '''
+        snippets: (b, c, t)
+        '''
+        b, _, t = snippets.size()
+        snippets_feature = rearrange(snippets, 'b c t -> (b t) c')
+
+        sub_class_aggregation_feature, snip2sub_sim_matrix = self.snippet_to_sub_mapping(snippets_feature, self.sub_classtype, self.sub_classtype)  # map to sub_class space
+        sub2fg_sim_matrix = self.sub_to_fg_mapping(sub_class_aggregation_feature, self.fb_type)
+        sub2class_sim_matrix = self.sub_to_class_mapping(sub_class_aggregation_feature, self.class_type)
+
+        snip2sub_sim_matrix = rearrange(snip2sub_sim_matrix, '(b t) s -> b t s', b=b)
+        sub2fg_sim_matrix = rearrange(sub2fg_sim_matrix, '(b t) e -> b t e', b=b)[:,:,0:1]
+        sub2class_sim_matrix = rearrange(sub2class_sim_matrix, '(b t) c -> b t c', b=b)
+
+        return snip2sub_sim_matrix, sub2fg_sim_matrix, sub2class_sim_matrix  # Return the processed snippets

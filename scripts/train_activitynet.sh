@@ -18,6 +18,7 @@ python main.py \
 --max_iter 22000 \
 --class_mapping a2t_class_mapping.json
 
+'''
 Number of ground truth instances: 3582                                                                                                                            
 Number of predictions: 42496                                                                                                                                      
 Classification map 91.249684 
@@ -30,3 +31,4 @@ OOD classification map 97.231499
 mAP Avg 0.1-0.5: 36.5387915228076, mAP Avg 0.1-0.7: 33.041746817751516, mAP Avg ALL: 26.548320653006837
 MAX map @ 0.1 = 16.848 ||MAX map @ 0.2 = 12.531 ||MAX map @ 0.3 = 8.942 ||MAX map @ 0.4 = 5.810 ||MAX map @ 0.5 = 3.746 ||MAX map @ 0.6 = 1.925 ||MAX map @ 0.7 = 0.671 ||MAX map @ 0.8 = 0.212 ||MAX map @ 0.9 = 0.016 
 mAP Avg 0.1-0.7: 7.210496617058693
+'''
