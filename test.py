@@ -12,6 +12,7 @@ import models
 import options
 import proposal_methods as PM
 import utils.wsad_utils as utils
+from ood_test import ood_test
 import wsad_dataset
 from eval.classificationMAP import getClassificationMAP as cmAP
 from eval.eval_detection import ANETdetection
@@ -88,16 +89,143 @@ def test(itr, dataset, args, model, device):
 
     return iou, dmap
 
+def main_thumos2anet():
+    print("Thumos14 -> ActivityNet1.2")
 
-if __name__ == '__main__':
     args = options.parser.parse_args()
     device = torch.device("cuda")
-    dataset = getattr(wsad_dataset, args.dataset)(args)
+
+
+    # Thumos 14
+    args.ckpt_path = "ckpt/best_delu_thumos.pkl"
+    args.dataset_name = "Thumos14reduced"
+    args.dataset = "SampleDataset"
+    args.num_class = 20
+    args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
+    args.max_seqlen = 320
+    args.scales = [1]
+    
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load('./ckpt/best_' + args.model_name + '.pkl'))
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
     iou, dmap = test(-1, dataset, args, model, device)
-    print('mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
+    # Anet
+    args.dataset_name = "ActivityNet1.2"
+    args.dataset = "AntSampleDataset"
+    args.num_class = 100
+    args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+    args.max_seqlen = 60
+    args.scales = [28]
+
+    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+
+    iou, dmap, mAP_Avg_ALL = ood_test(
+                    dataset,
+                    args,
+                    model,
+                    device,
+                    class_mapping=args.class_mapping,
+                    save_activation=False,
+                )
+
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    ood_max_map = np.array(dmap)
+    print('ActivityNet: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+
+
+def main_anet2thumos():
+    print("ActivityNet1.2 -> Thumos14")
+
+    args = options.parser.parse_args()
+    device = torch.device("cuda")
+
+    # Anet
+    args.class_mapping = "a2t_class_mapping.json"
+    args.ckpt_path = "ckpt/best_delu_act.pkl"
+    args.dataset_name = "ActivityNet1.2"
+    args.dataset = "AntSampleDataset"
+    args.num_class = 100
+    args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+    args.max_seqlen = 60
+    args.scales = [25]
+
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+
+    iou, dmap = test(-1, dataset, args, model, device)
+
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    ood_max_map = np.array(dmap)
+    print('ActivityNet: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+
+    # Thumos 14
+    args.dataset_name = "Thumos14reduced"
+    args.dataset = "SampleDataset"
+    args.num_class = 20
+    args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
+    args.max_seqlen = 320
+    args.scales = [1]
+
+    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+
+    iou, dmap, mAP_Avg_ALL = ood_test(
+                    dataset,
+                    args,
+                    model,
+                    device,
+                    class_mapping=args.class_mapping,
+                    save_activation=False,
+                )
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
+                                                                             np.mean(dmap[:7]) * 100,
+                                                                             np.mean(dmap) * 100))
+    
+
+
+
+if __name__ == '__main__':
+    # main_thumos2anet()
+    main_anet2thumos()
+    
+

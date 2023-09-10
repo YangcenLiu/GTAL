@@ -657,15 +657,14 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         self.ce_criterion = nn.BCELoss()
 
         self.pool = nn.ModuleList()
-        self.classifier = nn.ModuleList()
         for _kernel in self.scales:
             self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
-            self.classifier.append(
-                nn.Sequential(
-                    nn.Dropout(dropout_ratio),
-                    nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
-                    nn.Dropout(0.7), 
-                    nn.Conv1d(embed_dim, n_class + 1, 1)))
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
+            nn.Dropout(0.7), 
+            nn.Conv1d(embed_dim, n_class + 1, 1))
 
         self.apply(weights_init)
     
@@ -704,8 +703,9 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         x_atn = (f_atn + v_atn) / 2
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
 
-        x_cls = self.fpn_forward(nfeat)
+        x_cls = self.pool_forward(x_cls)
         x_atn = self.pool_forward(x_atn)
         f_atn = self.pool_forward(f_atn)
         v_atn = self.pool_forward(v_atn)

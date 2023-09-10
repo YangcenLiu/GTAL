@@ -231,14 +231,6 @@ def ood_test(
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
 
-    '''
-    if args.dataset_name == "Thumos14":
-        test_set = sio.loadmat("test_set_meta.mat")["test_videos"][0]
-        for i in range(np.shape(labels_stack)[0]):
-            if test_set[i]["background_video"] == "YES":
-                labels_stack[i, :] = np.zeros_like(labels_stack[i, :])
-    '''
-
     if "ActivityNet" in args.dataset_name:
         labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
     elif "Thumos14" in args.dataset_name:
@@ -261,21 +253,23 @@ def ood_test(
     print("mAP Avg ALL: {:.3f}".format(sum(dmap) / len(iou) * 100))
 
     mAP_Avg_ALL = sum(dmap) / len(iou) * 100
-
+    
+    '''
     if itr == -1:
         results = {f"map@{iou}": mAP * 100 for iou, mAP in zip(iou, dmap)}
         results["map avg"] = sum(dmap) / len(iou) * 100
         results["cmap"] = cmap
         results["eval dataset"] = args.dataset_name
-        output_path = (Path(args.checkpoint).parents[1] / "ood_results.json").as_posix()
+        output_path = (Path(args.work_dir).parents[1] / "ood_results.json").as_posix()
         if Path(output_path).exists():
             with open(output_path, "r") as file:
                 ood_results = json.load(file)
         else:
             ood_results = {}
-        ood_results[args.checkpoint] = results
+        ood_results[args.work_dir] = results
         with open(output_path, "w") as file:
             json.dump(ood_results, file)
+    '''
 
     return iou, dmap, mAP_Avg_ALL
 
