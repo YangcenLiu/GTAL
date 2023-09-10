@@ -39,9 +39,9 @@ def visualize(
         idx_mapping = {int(k): int(v["anet idx"]) for k, v in class_mapping.items()}
         # dataset.filter_by_class_names(target_classes_names)
 
-    root_path = Path(result_path).parent
-    save_path = root_path / "visualizations"
-    save_path.mkdir(exist_ok=True)
+    # root_path = Path(result_path).parent
+    # save_path = root_path / "visualizations"
+    # save_path.mkdir(exist_ok=True)
 
     dmap_detect = ANETdetection(
         dataset.path_to_annotations,
@@ -166,9 +166,7 @@ def plot_single(
 
 
 if __name__ == "__main__":
-    parser = options.get_parser()
-    # parser.add_argument("--class_mapping", type=str, default="t2a_class_mapping.json")
-    args = parser.parse_args()
+    args = options.parser.parse_args()
 
     dataset = getattr(wsad_dataset, args.dataset)(args)
     visualize(

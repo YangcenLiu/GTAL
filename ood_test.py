@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import scipy.io as sio
 import torch
+import os
 import torch.optim as optim
 import torch.nn.functional as F
 
@@ -23,44 +24,87 @@ from eval.classificationMAP import getClassificationMAP as cmAP
 torch.set_default_tensor_type("torch.cuda.FloatTensor")
 
 
-def dataframe_to_json(
+def OOD_dataframe_to_json(
     df,
     output_file,
-    videoname_file="/data0/lixunsong/Datasets/ActivityNet1.2/ActivityNet1.2-Annotations/videoname.npy",
-    url_file="/data0/lixunsong/Datasets/ActivityNet1.2/ActivityNet1.2-Annotations/url.npy",
-    t2a_class_mapping="t2a_class_mapping.json",
+    args,
 ):
-    df = df.copy()
+    class_mapping=args.class_mapping
+    if "ActivityNet" in args.dataset_name: # t2a
+        videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
+        url_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/url.npy")
+        df = df.copy()
 
-    videoname_list = np.load(videoname_file)
-    url_list = np.load(url_file)
-    url_list = [url.decode("utf-8").split("?")[-1][2:] for url in url_list]
-    videoname_mapper = {k.decode("utf-8"): v for k, v in zip(videoname_list, url_list)}
+        videoname_list = np.load(videoname_file)
+        url_list = np.load(url_file)
+        url_list = [url.decode("utf-8").split("?")[-1][2:] for url in url_list]
+        videoname_mapper = {k.decode("utf-8"): v for k, v in zip(videoname_list, url_list)}
 
-    with open(t2a_class_mapping, "r") as file:
-        t2a_class_mapping = json.load(file)
-        a_index2name = {
-            int(v["anet idx"]): v["anet name"] for k, v in t2a_class_mapping.items()
-        }
+        with open(class_mapping, "r") as file:
+            class_mapping = json.load(file)
+            a_index2name = {
+                int(k): v["anet name"] for k, v in class_mapping.items()
+            }
 
-    df["t-start"] = df["t-start"] * 16 / 25
-    df["t-end"] = df["t-end"] * 16 / 25
+        df["t-start"] = df["t-start"] * 16 / 25
+        df["t-end"] = df["t-end"] * 16 / 25
 
-    results = {}
-    for index, row in df.iterrows():
-        video_id = row["video-id"]
-        video_id = videoname_mapper[video_id]
-        label = row["label"]
-        entry = {
-            "label": a_index2name[label],
-            "score": row["score"],
-            "segment": [row["t-start"], row["t-end"]],
-        }
+        results = {}
+        for index, row in df.iterrows():
+            video_id = row["video-id"]
+            video_id = videoname_mapper[video_id]
+            label = row["label"]
+            if int(label) not in a_index2name:
+                continue
+            entry = {
+                "label": a_index2name[label],
+                "score": row["score"],
+                "segment": [row["t-start"], row["t-end"]],
+            }
 
-        if video_id in results:
-            results[video_id].append(entry)
-        else:
-            results[video_id] = [entry]
+            if video_id in results:
+                results[video_id].append(entry)
+            else:
+                results[video_id] = [entry]
+
+    elif "Thumos" in args.dataset_name:
+        videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
+        df = df.copy()
+
+        videoname_list = np.load(videoname_file)
+        videoname_mapper = [k.decode("utf-8") for k in videoname_list]
+
+        with open(class_mapping, "r") as file:
+            class_mapping = json.load(file)
+
+            t_index2name = {
+                int(k): v["thu name"] for k, v in class_mapping.items()
+            }
+
+        df["t-start"] = df["t-start"] * 16 / 25
+        df["t-end"] = df["t-end"] * 16 / 25
+
+        results = {}
+        for index, row in df.iterrows():
+            video_id = row["video-id"]
+            # video_id = videoname_mapper[video_id]
+            label = int(row["label"])
+            if label not in t_index2name:
+                continue
+            entry = {
+                "label": t_index2name[label],
+                "score": row["score"],
+                "segment": [row["t-start"], row["t-end"]],
+            }
+
+            if video_id in results:
+                results[video_id].append(entry)
+            else:
+                results[video_id] = [entry]
+    
+    else:
+        raise Exception("No Such Dataset!!!")
+
 
     with open(output_file, "w") as file:
         json.dump({"results": results}, file)
@@ -90,7 +134,6 @@ def ood_test(
     save_activation=True,
     itr=-1,
     class_mapping_param=None,
-    threshold=0.9 # threshold for pseudo label
 ):
     if class_mapping and class_mapping_param==None: # 走的上分支
         class_mapping = json.load(open(class_mapping, "r"))
@@ -150,16 +193,6 @@ def ood_test(
                 break
         if not keep:
             continue
-        '''
-        if args.modality == "rgb":
-            features = features[:, :1024]
-        elif args.modality == "flow":
-            features = features[:, 1024:]
-        elif args.modality == "fusion":
-            pass
-        else:
-            raise NotImplementedError
-        '''
             
         seq_len = [features.shape[0]]
         if seq_len == 0:
@@ -197,20 +230,18 @@ def ood_test(
     proposals = proposals[proposals["label"].isin(source_class_indices)]
     proposals["label"] = proposals["label"].map(idx_mapping)
 
-    results["proposals"] = proposals
     if save_activation:
-        try:
-            with open(
-                Path(args.checkpoint).parents[1] / "thu2anet1.2_activation.pkl", "wb"
-            ) as file:
-                pickle.dump(results, file)
 
-            dataframe_to_json(
-                proposals,
-                Path(args.checkpoint).parents[1] / "thu2anet1.2_proposals.json",
-            )
-        except:
-            pass
+        with open(
+            "proposal_results/OOD_activation.pkl", "wb"
+        ) as file:
+            pickle.dump(results, file)
+
+        OOD_dataframe_to_json(
+            proposals,
+            "proposal_results/OOD_proposals.json",
+            args,
+        )
 
     # CVPR2020
     if "Thumos14" in args.dataset_name:

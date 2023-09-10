@@ -3,3 +3,5 @@ ckpt/
 temp/
 __pycache__/
 work_dir/
+proposal_results/
+proposal_visualize/

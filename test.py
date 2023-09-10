@@ -1,5 +1,8 @@
 import os
 from collections import defaultdict
+from pathlib import Path
+import json
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -19,9 +22,94 @@ from eval.eval_detection import ANETdetection
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
+def IND_dataframe_to_json(
+    df,
+    output_file,
+    args,
+):
+    class_mapping=args.class_mapping
+    if "ActivityNet" in args.dataset_name:
+        videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
+        url_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/url.npy")
+        df = df.copy()
+
+        videoname_list = np.load(videoname_file)
+        url_list = np.load(url_file)
+        url_list = [url.decode("utf-8").split("?")[-1][2:] for url in url_list]
+        videoname_mapper = {k.decode("utf-8"): v for k, v in zip(videoname_list, url_list)}
+
+        with open(class_mapping, "r") as file:
+            class_mapping = json.load(file)
+            a_index2name = {
+                int(k): v["anet name"] for k, v in class_mapping.items()
+            }
+
+        df["t-start"] = df["t-start"] * 16 / 25
+        df["t-end"] = df["t-end"] * 16 / 25
+
+        results = {}
+        for index, row in df.iterrows():
+            video_id = row["video-id"]
+            video_id = videoname_mapper[video_id]
+            label = row["label"]
+            if int(label) not in a_index2name:
+                continue
+            entry = {
+                "label": a_index2name[label],
+                "score": row["score"],
+                "segment": [row["t-start"], row["t-end"]],
+            }
+
+            if video_id in results:
+                results[video_id].append(entry)
+            else:
+                results[video_id] = [entry]
+
+    elif "Thumos" in args.dataset_name:
+        videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
+        df = df.copy()
+
+        videoname_list = np.load(videoname_file)
+        videoname_mapper = [k.decode("utf-8") for k in videoname_list]
+
+        with open(class_mapping, "r") as file:
+            class_mapping = json.load(file)
+
+            t_index2name = {
+                int(k): v["thu name"] for k, v in class_mapping.items()
+            }
+
+        df["t-start"] = df["t-start"] * 16 / 25
+        df["t-end"] = df["t-end"] * 16 / 25
+
+        results = {}
+        for index, row in df.iterrows():
+            video_id = row["video-id"]
+            # video_id = videoname_mapper[video_id]
+            label = int(row["label"])
+            if label not in t_index2name:
+                continue
+            entry = {
+                "label": t_index2name[label],
+                "score": row["score"],
+                "segment": [row["t-start"], row["t-end"]],
+            }
+
+            if video_id in results:
+                results[video_id].append(entry)
+            else:
+                results[video_id] = [entry]
+    
+    else:
+        raise Exception("No Such Dataset!!!")
+
+
+    with open(output_file, "w") as file:
+        json.dump({"results": results}, file)
+
 
 @torch.no_grad()
-def test(itr, dataset, args, model, device):
+def test(itr, dataset, args, model, device, save_activation=False):
     model.eval()
     done = False
     instance_logits_stack = []
@@ -61,6 +149,19 @@ def test(itr, dataset, args, model, device):
     labels_stack = np.array(labels_stack)
     proposals = pd.concat(proposals).reset_index(drop=True)
 
+    if save_activation:
+
+        with open(
+            "proposal_results/IND_activation.pkl", "wb"
+        ) as file:
+            pickle.dump(results, file)
+
+        IND_dataframe_to_json(
+            proposals,
+            "proposal_results/IND_proposals.json",
+            args,
+        )
+
     # CVPR2020
     if 'Thumos14' in args.dataset_name:
         iou = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -85,8 +186,6 @@ def test(itr, dataset, args, model, device):
     print('||'.join(['map @ {} = {:.3f} '.format(iou[i], dmap[i] * 100) for i in range(len(iou))]))
     print('mAP Avg ALL: {:.3f}'.format(sum(dmap) / len(iou) * 100))
 
-    utils.write_to_file(args.dataset_name, dmap, cmap, itr)
-
     return iou, dmap
 
 def main_thumos2anet():
@@ -104,13 +203,14 @@ def main_thumos2anet():
     args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
     args.max_seqlen = 320
     args.scales = [1]
+    args.mapping = "t2a_class_mapping.json"
     
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
-    iou, dmap = test(-1, dataset, args, model, device)
+    iou, dmap = test(-1, dataset, args, model, device, save_activation=True)
     print(
     "||".join(
         [
@@ -128,7 +228,8 @@ def main_thumos2anet():
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [28]
+    args.scales = [1]
+    args.mapping = "t2a_class_mapping.json"
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -140,7 +241,7 @@ def main_thumos2anet():
                     model,
                     device,
                     class_mapping=args.class_mapping,
-                    save_activation=False,
+                    save_activation=True,
                 )
 
     print(
@@ -169,13 +270,13 @@ def main_anet2thumos():
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [25]
+    args.scales = [13] # 13
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
-    iou, dmap = test(-1, dataset, args, model, device)
+    iou, dmap = test(-1, dataset, args, model, device, save_activation=True)
 
     print(
     "||".join(
@@ -194,7 +295,7 @@ def main_anet2thumos():
     args.num_class = 20
     args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
     args.max_seqlen = 320
-    args.scales = [1]
+    args.scales = [13]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -207,7 +308,7 @@ def main_anet2thumos():
                     model,
                     device,
                     class_mapping=args.class_mapping,
-                    save_activation=False,
+                    save_activation=True
                 )
     print(
     "||".join(
@@ -225,7 +326,7 @@ def main_anet2thumos():
 
 
 if __name__ == '__main__':
-    # main_thumos2anet()
-    main_anet2thumos()
+    main_thumos2anet()
+    # main_anet2thumos()
     
 
