@@ -19,15 +19,13 @@ python main.py \
 --weight_decay 0.001 \
 --AWM BWA_fusion_dropout_feat_v2 \
 --proposal_method multi_scale_multiple_threshold_hamnet \
---scales 1 \
---work_dir work_dir/multi_scale
+--scales 13 \
+--work_dir work_dir/thumos_13
 
 '''
-lyc4 
-应该持平才对
+scales 13
 
-lyc3
-cas做pooling
+
 
 scales 1 3
 MAX map @ 0.1 = 69.763 ||MAX map @ 0.2 = 63.990 ||MAX map @ 0.3 = 55.176 ||MAX map @ 0.4 = 46.474 ||MAX map @ 0.5 = 37.959 ||MAX map @ 0.6 = 26.264 ||MAX map @ 0.7 = 14.312 ||MAX map @ 0.8 = 7.371 ||MAX map @ 0.9 = 2.135 

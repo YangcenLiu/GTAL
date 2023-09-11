@@ -430,5 +430,5 @@ def compute_average_precision_detection(
         ap[tidx] = interpolated_prec_rec(
             precision_cumsum[tidx, :], recall_cumsum[tidx, :]
         )
-
+    exit()
     return ap

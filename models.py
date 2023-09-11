@@ -658,7 +658,10 @@ class DELU_MULTI_SCALE(torch.nn.Module):
 
         self.pool = nn.ModuleList()
         for _kernel in self.scales:
-            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+            if _kernel > 0:
+                self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+            else:
+                self.pool.append(InverseAvgPool1d(-_kernel))
 
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_ratio),
@@ -1068,3 +1071,27 @@ class NewSubclassBranch(nn.Module):
         sub2class_sim_matrix = rearrange(sub2class_sim_matrix, '(b t) c -> b t c', b=b)
 
         return snip2sub_sim_matrix, sub2fg_sim_matrix, sub2class_sim_matrix  # Return the processed snippets
+
+class InverseAvgPool1d(nn.Module):
+    def __init__(self, kernel_size):
+        super(InverseAvgPool1d, self).__init__()
+        self.kernel_size = kernel_size
+
+    def forward(self, x):
+        # Pad the tenasor along the last dimension
+        x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2))
+
+        # Create an empty tensor with the same size as x
+        inverse = torch.zeros_like(x_padded)
+
+        # Handle the first element separately
+        inverse[..., 0] = self.kernel_size * x[..., 0]
+
+        # Iterate over the tensor along the dimension of size kernel_size
+        for i in range(x.size(-1) - 1):
+            inverse[..., i + self.kernel_size // 2 + 1] = inverse[..., i - self.kernel_size // 2] + self.kernel_size * (x_padded[..., i + 1] - x_padded[..., i])
+
+        # Remove padding
+        inverse = inverse[..., self.kernel_size // 2: -self.kernel_size // 2]
+
+        return inverse

@@ -49,8 +49,8 @@ def IND_dataframe_to_json(
 
         results = {}
         for index, row in df.iterrows():
-            video_id = row["video-id"]
-            video_id = videoname_mapper[video_id]
+            video_name = row["video-id"]
+            video_id = videoname_mapper[video_name]
             label = row["label"]
             if int(label) not in a_index2name:
                 continue
@@ -60,10 +60,10 @@ def IND_dataframe_to_json(
                 "segment": [row["t-start"], row["t-end"]],
             }
 
-            if video_id in results:
-                results[video_id].append(entry)
+            if video_name in results:
+                results[video_name].append(entry)
             else:
-                results[video_id] = [entry]
+                results[video_name] = [entry]
 
     elif "Thumos" in args.dataset_name:
         videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
@@ -109,11 +109,23 @@ def IND_dataframe_to_json(
 
 
 @torch.no_grad()
-def test(itr, dataset, args, model, device, save_activation=False):
+def test(itr, dataset, args, model, device, save_activation=False, ind_class_mapping=False):
     model.eval()
     done = False
     instance_logits_stack = []
     labels_stack = []
+    
+    if "ActivityNet" in args.dataset_name and ind_class_mapping: #Thumos->Anet
+
+        class_mapping = json.load(open("t2a_class_mapping.json", "r"))
+        target_class_indices = [
+            int(item["anet idx"]) for item in class_mapping.values()
+        ]
+    elif "Thumos" in args.dataset_name and ind_class_mapping:  # Anet->Thumos
+        class_mapping = json.load(open("a2t_class_mapping.json", "r"))
+        target_class_indices = [
+            int(item["thu idx"]) for item in class_mapping.values()
+        ]
 
     proposals = []
     results = defaultdict(dict)
@@ -130,7 +142,7 @@ def test(itr, dataset, args, model, device, save_activation=False):
         with torch.no_grad():
             outputs = model(Variable(features), is_training=False, seq_len=seq_len, opt=args)
             element_logits = outputs['cas']
-            results[vn] = {'cas': outputs['cas'], 'attn': outputs['attn']}
+            results[vn.decode("utf-8")] = {'cas': outputs['cas'], 'attn': outputs['attn']}
             proposals.append(getattr(PM, args.proposal_method)(vn, outputs))
             if isinstance(element_logits, list):
                 element_logits = torch.stack(element_logits, dim=0).mean(dim=0)
@@ -140,10 +152,6 @@ def test(itr, dataset, args, model, device, save_activation=False):
 
         instance_logits_stack.append(tmp)
         labels_stack.append(labels)
-
-    if not os.path.exists('temp'):
-        os.mkdir('temp')
-    np.save('temp/{}.npy'.format(args.model_name), results)
 
     instance_logits_stack = np.array(instance_logits_stack)
     labels_stack = np.array(labels_stack)
@@ -165,13 +173,18 @@ def test(itr, dataset, args, model, device, save_activation=False):
     # CVPR2020
     if 'Thumos14' in args.dataset_name:
         iou = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args)
+        if ind_class_mapping:
+            dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, selected_class_indices=target_class_indices)
+        else:
+            dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args)
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
     else:
         iou = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
-
-        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, subset='validation')
+        if ind_class_mapping:
+            dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, subset='validation', selected_class_indices=target_class_indices)
+        else:
+            dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, subset='validation')
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
 
@@ -188,7 +201,7 @@ def test(itr, dataset, args, model, device, save_activation=False):
 
     return iou, dmap
 
-def main_thumos2anet():
+def main_thumos2anet(ind_class_mapping):
     print("Thumos14 -> ActivityNet1.2")
 
     args = options.parser.parse_args()
@@ -210,7 +223,7 @@ def main_thumos2anet():
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
-    iou, dmap = test(-1, dataset, args, model, device, save_activation=True)
+    iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
         [
@@ -228,7 +241,7 @@ def main_thumos2anet():
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [1]
+    args.scales = [13]
     args.mapping = "t2a_class_mapping.json"
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
@@ -256,7 +269,7 @@ def main_thumos2anet():
     print('ActivityNet: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
 
 
-def main_anet2thumos():
+def main_anet2thumos(ind_class_mapping):
     print("ActivityNet1.2 -> Thumos14")
 
     args = options.parser.parse_args()
@@ -275,8 +288,9 @@ def main_anet2thumos():
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
-
-    iou, dmap = test(-1, dataset, args, model, device, save_activation=True)
+    
+    
+    iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
 
     print(
     "||".join(
@@ -288,14 +302,14 @@ def main_anet2thumos():
     )
     ood_max_map = np.array(dmap)
     print('ActivityNet: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
-
+    
     # Thumos 14
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
     args.num_class = 20
     args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
     args.max_seqlen = 320
-    args.scales = [13]
+    args.scales = [-3]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -326,7 +340,8 @@ def main_anet2thumos():
 
 
 if __name__ == '__main__':
-    main_thumos2anet()
-    # main_anet2thumos()
+    ind_class_mapping = False # True
+    main_thumos2anet(ind_class_mapping)
+    # main_anet2thumos(ind_class_mapping)
     
 

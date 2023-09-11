@@ -43,7 +43,7 @@ def OOD_dataframe_to_json(
         with open(class_mapping, "r") as file:
             class_mapping = json.load(file)
             a_index2name = {
-                int(k): v["anet name"] for k, v in class_mapping.items()
+                v["anet idx"]: v["anet name"] for k, v in class_mapping.items()
             }
 
         df["t-start"] = df["t-start"] * 16 / 25
@@ -51,10 +51,10 @@ def OOD_dataframe_to_json(
 
         results = {}
         for index, row in df.iterrows():
-            video_id = row["video-id"]
-            video_id = videoname_mapper[video_id]
-            label = row["label"]
-            if int(label) not in a_index2name:
+            video_name = row["video-id"]
+            video_id = videoname_mapper[video_name]
+            label = str(int(row["label"]))
+            if label not in a_index2name:
                 continue
             entry = {
                 "label": a_index2name[label],
@@ -62,10 +62,10 @@ def OOD_dataframe_to_json(
                 "segment": [row["t-start"], row["t-end"]],
             }
 
-            if video_id in results:
-                results[video_id].append(entry)
+            if video_name in results:
+                results[video_name].append(entry)
             else:
-                results[video_id] = [entry]
+                results[video_name] = [entry]
 
     elif "Thumos" in args.dataset_name:
         videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
@@ -78,7 +78,7 @@ def OOD_dataframe_to_json(
             class_mapping = json.load(file)
 
             t_index2name = {
-                int(k): v["thu name"] for k, v in class_mapping.items()
+                v["thu idx"] : v["thu name"] for k, v in class_mapping.items()
             }
 
         df["t-start"] = df["t-start"] * 16 / 25
@@ -88,8 +88,8 @@ def OOD_dataframe_to_json(
         for index, row in df.iterrows():
             video_id = row["video-id"]
             # video_id = videoname_mapper[video_id]
-            label = int(row["label"])
-            if label not in t_index2name:
+            label = str(int(row["label"]))
+            if str(label) not in t_index2name.keys():
                 continue
             entry = {
                 "label": t_index2name[label],
@@ -201,7 +201,9 @@ def ood_test(
         with torch.no_grad():
             outputs = model(features, is_training=False, seq_len=seq_len, opt=args, ood=True)
             element_logits = outputs['cas']
+            results[vn.decode("utf-8")] = {'cas': outputs['cas'], 'attn': outputs['attn']}
             pred_proposals = getattr(PM, args.proposal_method)(vn, outputs) # multiple_threshold_hamnet
+
             proposals.append(pred_proposals)
             if isinstance(element_logits, list):
                 element_logits = torch.stack(element_logits, dim=0).mean(dim=0)
@@ -246,7 +248,7 @@ def ood_test(
     # CVPR2020
     if "Thumos14" in args.dataset_name:
         iou = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args)
+        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, selected_class_indices=target_class_indices)
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
     else:
