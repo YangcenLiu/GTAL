@@ -69,7 +69,7 @@ parser.add_argument("--resize_max_ratio", type=float, default=1.5)
 
 # -------------ood test-----------------
 parser.add_argument("--model_num_classes", type=int, default=20)
-parser.add_argument("--class_mapping", type=str, default="t2a_class_mapping.json")
+parser.add_argument("--class_mapping", type=str, default="class_mapping/t2a_class_mapping.json")
 
 # -------------multi scale setting-----------------
 parser.add_argument("--scales", nargs='+', type=int, default=[1])

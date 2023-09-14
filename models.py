@@ -658,10 +658,8 @@ class DELU_MULTI_SCALE(torch.nn.Module):
 
         self.pool = nn.ModuleList()
         for _kernel in self.scales:
-            if _kernel > 0:
-                self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
-            else:
-                self.pool.append(InverseAvgPool1d(-_kernel))
+            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+
 
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_ratio),
@@ -1079,7 +1077,12 @@ class InverseAvgPool1d(nn.Module):
 
     def forward(self, x):
         # Pad the tenasor along the last dimension
-        x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2))
+        # x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2))
+        left_pad = x[:, :, :1]  # Take the first element along the last dimension
+        right_pad = x[:, :, -1:]  # Take the last element along the last dimension
+        x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2), 'constant', value=0)  # Pad with zeros
+        x_padded[:, :, :self.kernel_size // 2] = left_pad  # Replace left padding with x[0]
+        x_padded[:, :, -self.kernel_size // 2:] = right_pad  # Replace right padding with x[-1]
 
         # Create an empty tensor with the same size as x
         inverse = torch.zeros_like(x_padded)

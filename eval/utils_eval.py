@@ -3,6 +3,7 @@
 
 import json
 import urllib.request
+import matplotlib.pyplot as plt
 
 import numpy as np
 
@@ -76,3 +77,23 @@ def wrapper_segment_iou(target_segments, candidate_segments):
         tiou[:, i] = segment_iou(target_segments[i,:], candidate_segments)
 
     return tiou
+
+def draw_interpolated_prec_rec(prec, rec):
+    # 插值处理
+    mprec = np.hstack([[0], prec, [0]])
+    mrec = np.hstack([[0], rec, [0]])
+    for i in range(len(mprec) - 1, 0, -1):
+        mprec[i - 1] = max(mprec[i - 1], mprec[i])
+
+    # 绘制曲线
+    plt.figure(figsize=(8, 6))
+    plt.scatter(mrec, mprec, c='g', marker='.')
+    plt.xlabel('Recall (%)')
+    plt.ylabel('Precision (%)')
+    plt.ylim([0.0, 1.05])
+    plt.xlim([0.0, 1.0])
+    plt.title('Thumos IND IoU=0.5')
+    plt.grid(True)
+    
+    # 保存图像到指定路径
+    plt.savefig('proposal_results/output.png')

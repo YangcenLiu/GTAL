@@ -30,7 +30,7 @@ def OOD_dataframe_to_json(
     args,
 ):
     class_mapping=args.class_mapping
-    if "ActivityNet" in args.dataset_name: # t2a
+    if "ActivityNet1.2" in args.dataset_name: # t2a
         videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
         url_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/url.npy")
         df = df.copy()
@@ -101,6 +101,41 @@ def OOD_dataframe_to_json(
                 results[video_id].append(entry)
             else:
                 results[video_id] = [entry]
+
+    elif "ActivityNet1.3" in args.dataset_name:
+        videoname_file=os.path.join(args.path_dataset, args.dataset_name+"-Annotations/videoname.npy")
+        df = df.copy()
+
+        videoname_list = np.load(videoname_file)
+        videoname_mapper = [k.decode("utf-8") for k in videoname_list]
+
+        with open(class_mapping, "r") as file:
+            class_mapping = json.load(file)
+
+            t_index2name = {
+                v["anet idx"] : v["anet name"] for k, v in class_mapping.items()
+            }
+
+        df["t-start"] = df["t-start"] * 16 / 25
+        df["t-end"] = df["t-end"] * 16 / 25
+
+        results = {}
+        for index, row in df.iterrows():
+            video_id = row["video-id"]
+            # video_id = videoname_mapper[video_id]
+            label = str(int(row["label"]))
+            if str(label) not in t_index2name.keys():
+                continue
+            entry = {
+                "label": t_index2name[label],
+                "score": row["score"],
+                "segment": [row["t-start"], row["t-end"]],
+            }
+
+            if video_id in results:
+                results[video_id].append(entry)
+            else:
+                results[video_id] = [entry]
     
     else:
         raise Exception("No Such Dataset!!!")
@@ -131,7 +166,7 @@ def ood_test(
     model,
     device,
     class_mapping=None,
-    save_activation=True,
+    save_activation=False,
     itr=-1,
     class_mapping_param=None,
 ):
@@ -248,7 +283,7 @@ def ood_test(
     # CVPR2020
     if "Thumos14" in args.dataset_name:
         iou = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, selected_class_indices=target_class_indices)
+        dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args,subset="test", selected_class_indices=target_class_indices)
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
     else:
@@ -264,10 +299,12 @@ def ood_test(
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
 
-    if "ActivityNet" in args.dataset_name:
+    if "ActivityNet1.2" in args.dataset_name:
         labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
     elif "Thumos14" in args.dataset_name:
         labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101)
+    elif "ActivityNet1.3" in args.dataset_name:
+        labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21) # 这个是写IND的class数
 
     instance_logits_stack = np.take(instance_logits_stack, source_class_indices, axis=1) # 193,8
     labels_stack = np.take(labels_stack, source_class_indices, axis=1)
@@ -286,23 +323,6 @@ def ood_test(
     print("mAP Avg ALL: {:.3f}".format(sum(dmap) / len(iou) * 100))
 
     mAP_Avg_ALL = sum(dmap) / len(iou) * 100
-    
-    '''
-    if itr == -1:
-        results = {f"map@{iou}": mAP * 100 for iou, mAP in zip(iou, dmap)}
-        results["map avg"] = sum(dmap) / len(iou) * 100
-        results["cmap"] = cmap
-        results["eval dataset"] = args.dataset_name
-        output_path = (Path(args.work_dir).parents[1] / "ood_results.json").as_posix()
-        if Path(output_path).exists():
-            with open(output_path, "r") as file:
-                ood_results = json.load(file)
-        else:
-            ood_results = {}
-        ood_results[args.work_dir] = results
-        with open(output_path, "w") as file:
-            json.dump(ood_results, file)
-    '''
 
     return iou, dmap, mAP_Avg_ALL
 

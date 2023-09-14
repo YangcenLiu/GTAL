@@ -11,7 +11,7 @@ import sys
 import scipy.io as sio
 import os
 from eval.utils_eval import get_blocked_videos
-from eval.utils_eval import interpolated_prec_rec
+from eval.utils_eval import interpolated_prec_rec, draw_interpolated_prec_rec
 from eval.utils_eval import segment_iou
 import pdb
 
@@ -430,5 +430,8 @@ def compute_average_precision_detection(
         ap[tidx] = interpolated_prec_rec(
             precision_cumsum[tidx, :], recall_cumsum[tidx, :]
         )
-    exit()
+    
+    
+    # draw_interpolated_prec_rec(precision_cumsum[0, :], recall_cumsum[0, :])
+    # exit()
     return ap
