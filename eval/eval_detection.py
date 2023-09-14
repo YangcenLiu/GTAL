@@ -53,9 +53,6 @@ def filter_segments(segment_predict, videonames, ambilist):
                 gt = range(
                     int(round(float(a[2]) * 25 / 16)), int(round(float(a[3]) * 25 / 16))
                 )
-                gt = range(
-                    int(round(float(a[2]) * 25 / 16)), int(round(float(a[3]) * 25 / 16))
-                )
                 pd = range(int(segment_predict[i][1]), int(segment_predict[i][2]))
                 IoU = float(len(set(gt).intersection(set(pd)))) / float(
                     len(set(gt).union(set(pd)))
@@ -118,6 +115,10 @@ class ANETdetection(object):
         self.ap = None
         self.annotation_path = os.path.join(args.path_dataset,annotation_path)
         self.prediction = None
+        if "ActivityNet1.3" in args.dataset_name:
+            self.requires_fps = True
+        else:
+            self.requires_fps = False
         self._import_ground_truth(self.annotation_path)
         print("Ground truth imported.")
         #####
@@ -132,6 +133,9 @@ class ANETdetection(object):
         classlist = np.load(annotation_path + "/classlist.npy", allow_pickle=True)
         classlist = np.array([c.decode("utf-8") for c in classlist])
         duration = np.load(annotation_path + "/duration.npy", allow_pickle=True)
+        if self.requires_fps:
+            fpsfile = np.load(annotation_path + "/fps.npy", allow_pickle=True)
+            fpslist = {videoname[i]:fpsfile[i] for i in range(len(videoname))}
         ambilist = annotation_path + "/Ambiguous_test.txt"
 
         try:
@@ -148,6 +152,9 @@ class ANETdetection(object):
         gtlabels = gtlabels[subset_ind]
         videoname = videoname[subset_ind]
         duration = duration[subset_ind]
+
+        if self.requires_fps:
+            duration = [duration[i] * fpslist[videoname[i]]/25 for i in range(len(videoname))]
 
         self.idx_to_take = [i for i, s in enumerate(gtsegments)
                             if len(s) >0 ]
@@ -172,8 +179,12 @@ class ANETdetection(object):
         for i in range(len(gtsegments)):
             for j in range(len(gtsegments[i])):
                 video_lst.append(str(videoname[i]))
-                t_start_lst.append(round(gtsegments[i][j][0]*25/16))
-                t_end_lst.append(round(gtsegments[i][j][1]*25/16))
+                if self.requires_fps:
+                    t_start_lst.append(round(gtsegments[i][j][0]*fpslist[videoname[i]]/16))
+                    t_end_lst.append(round(gtsegments[i][j][1]*fpslist[videoname[i]]/16))
+                else:
+                    t_start_lst.append(round(gtsegments[i][j][0]*25/16))
+                    t_end_lst.append(round(gtsegments[i][j][1]*25/16))
                 label_lst.append(str2ind(gtlabels[i][j], self.classlist))
         
         if self.selected_class_indices is not None:

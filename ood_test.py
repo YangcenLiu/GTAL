@@ -304,7 +304,10 @@ def ood_test(
     elif "Thumos14" in args.dataset_name:
         labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101)
     elif "ActivityNet1.3" in args.dataset_name:
-        labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21) # 这个是写IND的class数
+        if "a2a_plus_class_mapping" in args.class_mapping:
+            labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101) # 这个是写IND的class数
+        else:
+            labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
 
     instance_logits_stack = np.take(instance_logits_stack, source_class_indices, axis=1) # 193,8
     labels_stack = np.take(labels_stack, source_class_indices, axis=1)

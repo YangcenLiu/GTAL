@@ -51,7 +51,7 @@ def visualize(
         idx_mapping = {int(k): int(v["thu idx"]) for k, v in class_mapping.items()}
         # dataset.filter_by_class_names(target_classes_names)
 
-    save_path = os.path.join(output_path, "ThumosIND1_IND5")
+    save_path = os.path.join(output_path, "Anet1.3")
 
     if "Thumos" in args.dataset_name:
         dmap_detect = ANETdetection(
@@ -115,7 +115,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "Thumos IND-1",
+            "Thumos14 to Anet1.3",
         )
 
         ax = plt.subplot(2, 1, 2)
@@ -128,7 +128,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "Thumos IND-3",
+            "Anet1.2 to Anet1.3",
         )
 
         plt.tight_layout()
@@ -157,9 +157,24 @@ def plot_single(
                 "Shot put": 74,
                 "Discus throw": 15,
     }
+    anet_plus_json = {"Clean and jerk": 0,
+                "Hammer throw": 1,
+                "High jump": 2,
+                "Javelin throw": 3,
+                "Long jump": 4,
+                "Pole vault": 5,
+                "Shot put": 6,
+                "Discus throw": 7,
+    }
+
+    fpsfile = np.load("/data0/lixunsong/Datasets/ActivityNet1.3/ActivityNet1.3-Annotations" + "/fps.npy", allow_pickle=True)
+    videoname = np.load("/data0/lixunsong/Datasets/ActivityNet1.3/ActivityNet1.3-Annotations" + "/videoname.npy", allow_pickle=True)
+    videoname = np.array([i.decode("utf8") for i in videoname])
+    fpslist = {videoname[i]:fpsfile[i] for i in range(len(videoname))}
 
     # plot the start and end times as lines for each ground truth
     for _, row in video_df_gt.iterrows():
+        fps = fpslist[row["video-id"]]
         start = row["t-start"] * 16 / 25
         end = row["t-end"] * 16 / 25
         ax.plot(
@@ -169,16 +184,17 @@ def plot_single(
     if video_id in proposals.keys():
         # get the rows for this video from proposals
         video_df_proposals = proposals[video_id]
+        fps = fpslist[video_id]
         # plot the start and end times as lines for each proposal
         for row in video_df_proposals:
-            start = row["segment"][0] # * 16 / 25
-            end = row["segment"][1] # * 16 / 25
+            start = row["segment"][0]
+            end = row["segment"][1]
             score = row["score"]
             score = min(score, 1)
             label = row["label"]
 
             linestyle = (
-                "-" if thumos_json[label] not in gt_labels else "solid"
+                "-" if anet_plus_json[label] not in gt_labels else "solid"
             )  # Dashed line if label not in ground truth labels
 
             ax.plot(
@@ -213,9 +229,9 @@ def plot_single(
 
 if __name__ == "__main__":
     args = options.parser.parse_args()
-    name = "thumos"
+    name = "anet1.3"
 
-    if name == "anet":
+    if name == "anet1.2":
         args.dataset_name = "ActivityNet1.2"
         args.dataset = "AntSampleDataset"
         args.num_class = 100
@@ -229,20 +245,20 @@ if __name__ == "__main__":
             args,
             result_path="proposal_results/A_IND_proposals.json",
             attn_path="proposal_results/A_IND_activation.pkl",
-            compare_result_path="proposal_results/A__proposals.json",
-            compare_attn_path="proposal_results/A13_OOD_activation.pkl",
+            compare_result_path="proposal_results/OOD_proposals.json",
+            compare_attn_path="proposal_results/OOD_activation.pkl",
             class_mapping=args.class_mapping,
         )
         
 
-    else:
+    elif name=="thumos":
         args.dataset_name = "Thumos14reduced"
         args.dataset = "SampleDataset"
         args.num_class = 20
         args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14/"
         args.max_seqlen = 320
         args.scales = [1]
-        args.class_mapping = "a2t_class_mapping.json"
+        args.class_mapping = "class_mapping/a2t_class_mapping.json"
 
         dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
         visualize(
@@ -254,3 +270,24 @@ if __name__ == "__main__":
             compare_attn_path="proposal_results/IND_activation.pkl",
             class_mapping=args.class_mapping,
         )
+    
+    elif name == "anet1.3":
+        # Anet
+        args.dataset_name = "ActivityNet1.3"
+        args.dataset = "AntPlusSampleDataset"
+        args.num_class = 9
+        args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
+        args.max_seqlen = 60
+        args.class_mapping = "class_mapping/a2a_plus_class_mapping.json"
+
+        dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+        visualize(
+            dataset,
+            args,
+            result_path="proposal_results/A_plus_T_OOD_proposals.json",
+            attn_path="proposal_results/A_plus_T_OOD_activation.pkl",
+            compare_result_path="proposal_results/OOD_proposals.json",
+            compare_attn_path="proposal_results/OOD_activation.pkl",
+            class_mapping=args.class_mapping,
+        )
+

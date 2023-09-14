@@ -361,7 +361,7 @@ def main_thumos2anet_plus(ind_class_mapping):
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
-    '''
+
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -374,14 +374,82 @@ def main_thumos2anet_plus(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-    '''
     # Anet
     args.dataset_name = "ActivityNet1.3"
     args.dataset = "AntPlusSampleDataset"
     args.num_class = 9
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
     args.max_seqlen = 60
-    args.scales = [17]
+    args.scales = [13]
+
+    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+
+    iou, dmap, mAP_Avg_ALL = ood_test(
+                    dataset,
+                    args,
+                    model,
+                    device,
+                    class_mapping=args.class_mapping,
+                    save_activation=True,
+                )
+
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    ood_max_map = np.array(dmap)
+    print('ActivityNet1.3: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+
+
+def main_anet2anet_plus(ind_class_mapping):
+
+    print("ActivityNet1.2 -> ActivityNet1.3")
+
+    args = options.parser.parse_args()
+    device = torch.device("cuda")
+
+
+    # Anet
+    args.class_mapping = "class_mapping/a2a_plus_class_mapping.json"
+    args.ckpt_path = "ckpt/best_delu_act.pkl"
+    args.dataset_name = "ActivityNet1.2"
+    args.dataset = "AntSampleDataset"
+    args.num_class = 100
+    args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
+    args.max_seqlen = 60
+    args.scales = [13] # 13
+
+    dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    
+    
+    iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
+
+    print(
+    "||".join(
+        [
+            "MAX map @ {} = {:.3f} ".format(iou[i], dmap[i] * 100)
+            for i in range(len(iou))
+        ]
+        )
+    )
+    ood_max_map = np.array(dmap)
+    print('ActivityNet1.2: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+
+    # Anet
+    args.dataset_name = "ActivityNet1.3"
+    args.dataset = "AntPlusSampleDataset"
+    args.num_class = 9
+    args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
+    args.max_seqlen = 60
+    args.scales = [13]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -409,9 +477,10 @@ def main_thumos2anet_plus(ind_class_mapping):
 
 
 if __name__ == '__main__':
-    ind_class_mapping = False # True
+    ind_class_mapping = True # True
     # main_thumos2anet(ind_class_mapping)
     # main_anet2thumos(ind_class_mapping)
-    main_thumos2anet_plus(ind_class_mapping)
+    # main_thumos2anet_plus(ind_class_mapping)
+    main_anet2anet_plus(ind_class_mapping)
     
 
