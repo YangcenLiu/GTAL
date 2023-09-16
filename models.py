@@ -49,10 +49,11 @@ class BWA_fusion_dropout_feat_v2(torch.nn.Module):
 
 
 class DELU(torch.nn.Module):
-    def __init__(self, n_feature, n_class, **args):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
         embed_dim = 2048
         dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
 
         self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
         self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
@@ -200,7 +201,7 @@ class DELU(torch.nn.Module):
         snippet_uct = n_class / S
 
         total_snippet_num = element_logits.shape[1]
-        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude)
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
 
         loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
 
@@ -308,8 +309,8 @@ class DELU(torch.nn.Module):
             atn1 = F.softmax(element_logits[i], dim=0)
             atn2 = F.softmax(element_logits[i + 1], dim=0)
 
-            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
-            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
             Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
             Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
             Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
@@ -320,9 +321,9 @@ class DELU(torch.nn.Module):
             d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
             d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
         sim_loss = sim_loss / n_tmp
         return sim_loss
@@ -334,10 +335,11 @@ class DELU(torch.nn.Module):
 
 
 class DELU_ACT(torch.nn.Module):
-    def __init__(self, n_feature, n_class, **args):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
         embed_dim = 2048
         mid_dim = 1024
+        self.device = device
         dropout_ratio = args['opt'].dropout_ratio
         reduce_ratio = args['opt'].reduce_ratio
 
@@ -489,7 +491,7 @@ class DELU_ACT(torch.nn.Module):
         snippet_uct = n_class / S
 
         total_snippet_num = element_logits.shape[1]
-        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude)
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
 
         loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
 
@@ -610,8 +612,8 @@ class DELU_ACT(torch.nn.Module):
             atn1 = F.softmax(element_logits[i], dim=0)
             atn2 = F.softmax(element_logits[i + 1], dim=0)
 
-            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
-            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
             Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
             Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
             Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
@@ -622,9 +624,9 @@ class DELU_ACT(torch.nn.Module):
             d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
             d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
         sim_loss = sim_loss / n_tmp
         return sim_loss
@@ -635,10 +637,11 @@ class DELU_ACT(torch.nn.Module):
         return element_logits, element_atn
 
 class DELU_MULTI_SCALE(torch.nn.Module):
-    def __init__(self, n_feature, n_class, **args):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
         embed_dim = 2048
         mid_dim = 1024
+        self.device = device
         dropout_ratio = args['opt'].dropout_ratio
         reduce_ratio = args['opt'].reduce_ratio
 
@@ -850,7 +853,7 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         snippet_uct = n_class / S
 
         total_snippet_num = element_logits.shape[1]
-        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude)
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
 
         loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
 
@@ -971,8 +974,8 @@ class DELU_MULTI_SCALE(torch.nn.Module):
             atn1 = F.softmax(element_logits[i], dim=0)
             atn2 = F.softmax(element_logits[i + 1], dim=0)
 
-            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
-            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
             Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
             Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
             Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
@@ -983,9 +986,9 @@ class DELU_MULTI_SCALE(torch.nn.Module):
             d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
             d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
         sim_loss = sim_loss / n_tmp
         return sim_loss
@@ -995,11 +998,12 @@ class DELU_MULTI_SCALE(torch.nn.Module):
 
         return element_logits, element_atn
 
-class DELU_MULTI_PYRAMID(torch.nn.Module):
-    def __init__(self, n_feature, n_class, **args):
+class DELU_PYRAMID(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
         embed_dim = 2048
         dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
 
         self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
         self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
@@ -1015,14 +1019,16 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
         self.batch_avg = nn.AdaptiveAvgPool1d(1)
         self.ce_criterion = nn.BCELoss()
 
-        self.attention = nn.ModuleList()
-        for _kernel in self.scales():
-            self.attention.append(nn.Attention(embed_dim, ))
+        self.attentions = nn.ModuleList()
+        self.attn_fusion = nn.ModuleList()
 
-        self.pool = nn.ModuleList()
-        for _kernel in self.scales:
-            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+        for _kernel in self.scales: # 每个scale添加一个attention windows
+            self.attentions.append(AttentionPool1d(hidden_dim=embed_dim, kernel=_kernel, dropout_prob=dropout_ratio))
+            self.attn_fusion.append(nn.Sequential(
+            nn.Conv1d(2*n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio)))
 
+
+        self.pool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True) # 只保留单一的scale用于Anet
 
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_ratio),
@@ -1032,31 +1038,20 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
 
         self.apply(weights_init)
     
-    def fpn_forward(self, x):
- 
-        head_output=[]
-        current = self.pool[-1](x)
-        head_output.append(self.classifier[-1](current).transpose(-1, -2))
+    def attention_pool(self, x):
+        head_output = []
+        previous = self.attentions[-1](x) # the last scale
+        current = None
 
-        for i in range(len(self.scales)-2,-1,-1):
-            current = self.pool[i](x) # 这里后期再考虑各层配合
-            pre = current
-            head_output.append(self.classifier[i](current).transpose(-1, -2))
+        for i in range(len(self.scales) - 2, -1, -1):
+            scale = self.scales[i]
+            current = self.attentions[i](x)
+            current = self.attn_fusion[i+1](torch.cat((current, previous), 1)) # 把上层和这层融合
+            previous = current
+        
+        output = self.attn_fusion[0](torch.cat((current, x), 1))
 
-        return list(reversed(head_output)) # 1,2,4,8...
-
-    def pool_forward(self, x):
-
-        head_output=[]
-        current = self.pool[-1](x)
-        head_output.append(current.transpose(-1, -2))
-
-        for i in range(len(self.scales)-2,-1,-1):
-            current = self.pool[i](x) # 这里后期再考虑各层配合
-            pre = current
-            head_output.append(current.transpose(-1, -2))
-
-        return list(reversed(head_output)) # 1,2,4,8...
+        return output  # 1,2,4,8...
 
     def forward(self, inputs, is_training=True, **args):
         feat = inputs.transpose(-1, -2)
@@ -1067,17 +1062,21 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
         x_atn = (f_atn + v_atn) / 2
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
+
+        nfeat = self.attention_pool(nfeat) # 和普通的DELU唯一的区别
+
         x_cls = self.classifier(nfeat)
 
-        x_cls = self.pool_forward(x_cls)
-        x_atn = self.pool_forward(x_atn)
-        f_atn = self.pool_forward(f_atn)
-        v_atn = self.pool_forward(v_atn)
+        if "ActivityNet" in args["opt"].dataset_name:
+            x_cls = self.pool(x_cls)
+            x_atn = self.pool(x_atn)
+            f_atn = self.pool(f_atn)
+            v_atn = self.pool(v_atn)
 
         # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
 
-        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls, 'attn': x_atn,
-                'v_atn': v_atn, 'f_atn': f_atn}
+        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
+                'v_atn': v_atn.transpose(-1, -2), 'f_atn': f_atn.transpose(-1, -2)}
 
     def _multiply(self, x, atn, dim=-1, include_min=False):
         if include_min:
@@ -1087,38 +1086,9 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
         return atn * (x - _min) + _min
 
     def criterion(self, outputs, labels, **args):
-        total_loss = 0.0  # Initialize the total loss
-        avg_loss_dict = {}  # Initialize the dictionary for averaging loss_dict elements
-
-        for scale in range(len(self.scales)):
-            single_scale_total_loss, single_scale_loss_dict = self.single_scale_criterion(scale, outputs, labels, args)
-            
-            # Accumulate the single_scale_total_loss
-            total_loss += single_scale_total_loss
-
-            # Aggregate elements from single_scale_loss_dict for averaging
-            for key, value in single_scale_loss_dict.items():
-                if key in avg_loss_dict:
-                    avg_loss_dict[key] += value
-                else:
-                    avg_loss_dict[key] = value
-
-        # Calculate the average loss
-        num_scales = float(len(self.scales))
-        avg_total_loss = total_loss / num_scales
-
-        # Average the elements in avg_loss_dict
-        for key in avg_loss_dict:
-            avg_loss_dict[key] /= num_scales
-
-        return avg_total_loss, avg_loss_dict
-        
-
-    def single_scale_criterion(self, scale, outputs, labels, args):
-        feat, element_logits, element_atn = outputs['feat'], outputs['cas'][scale], outputs['attn'][scale]
-        v_atn = outputs['v_atn'][scale]
-        f_atn = outputs['f_atn'][scale]
-        
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
         mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
         # learning weight dynamic, lambda1 (1-lambda1)
         b, n, c = element_logits.shape
@@ -1213,7 +1183,7 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
         snippet_uct = n_class / S
 
         total_snippet_num = element_logits.shape[1]
-        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude)
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
 
         loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
 
@@ -1334,8 +1304,8 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
             atn1 = F.softmax(element_logits[i], dim=0)
             atn2 = F.softmax(element_logits[i + 1], dim=0)
 
-            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
-            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
             Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
             Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
             Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
@@ -1346,9 +1316,9 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
             d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
             d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             sim_loss = sim_loss + 0.5 * torch.sum(
-                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
             n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
         sim_loss = sim_loss / n_tmp
         return sim_loss
@@ -1358,9 +1328,68 @@ class DELU_MULTI_PYRAMID(torch.nn.Module):
 
         return element_logits, element_atn
 
+class AcceleratedAttentionPool1d(nn.Module):
+    def __init__(self, hidden_dim, kernel):
+        super(AcceleratedAttentionPool1d, self).__init__()
+        self.kernel = kernel
+        self.attention = CrossAttention(hidden_dim)
+
+    def forward(self, x):
+        batch_size, embed_dim, seq_len = x.size()
+
+        # Calculate the padding needed for the input tensor
+        padding = self.kernel // 2
+        x_padded = F.pad(x, (padding, padding), mode='constant', value=0)
+
+        # Initialize indices for efficient slicing
+        indices = torch.arange(self.kernel).view(1, 1, -1).expand(batch_size, embed_dim, -1).to(x.device)
+
+        # Apply CrossAttention with a step size of 1
+        chunks = x_padded.unfold(2, self.kernel, 1)
+        out_list = []
+
+        for chunk in chunks.transpose(1, 2).contiguous().view(-1, embed_dim, self.kernel):
+            out, _ = self.attention(chunk, x_padded, chunk)
+            center_out = out.gather(dim=2, index=indices)
+            out_list.append(center_out.view(batch_size, embed_dim, 1))
+
+        # Stack and reshape the attention-weighted representations
+        output = torch.cat(out_list, dim=2)
+
+        return output
+
+class AttentionPool1d(nn.Module):
+    def __init__(self, hidden_dim, kernel, dropout_prob=0.0):
+        super(AttentionPool1d, self).__init__()
+        self.kernel = kernel
+        self.attention = CrossAttention(hidden_dim, dropout_prob=0.0)
+
+    def forward(self, x):
+        batch_size, embed_dim, seq_len = x.size()
+
+        # Calculate the padding needed for the input tensor
+        padding = self.kernel // 2
+        x_padded = F.pad(x, (padding, padding), mode='constant', value=0).transpose(-1,-2)
+
+        # Initialize a list to store the outputs of CrossAttention
+        output_list = []
+
+        # Apply CrossAttention with a step size of 1
+        for i in range(padding, x_padded.size(1)-padding):
+            chunk = x_padded[:, i : i + 1, :]  # Get the current chunk
+            windows = x_padded[:, i - padding: i + padding + 1, :]
+
+            # Apply CrossAttention
+            out, _ = self.attention(chunk, windows, windows)
+            output_list.append(out)
+
+        # Concatenate the attention-weighted representations
+        output = torch.cat(output_list, dim=1).transpose(-1,-2)
+
+        return output
 
 class CrossAttention(nn.Module):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, dropout_prob=0.0):
         super(CrossAttention, self).__init__()
 
         self.hidden_dim = hidden_dim
@@ -1371,18 +1400,22 @@ class CrossAttention(nn.Module):
         self.value = nn.Linear(hidden_dim, hidden_dim)
         self.fc_out = nn.Linear(hidden_dim, hidden_dim)
 
-        self.register_buffer("scale",torch.sqrt(torch.FloatTensor([hidden_dim])))
+        self.register_buffer("scale", torch.sqrt(torch.FloatTensor([hidden_dim])))
+
+        # Add dropout layer with the specified dropout probability
+        self.dropout = nn.Dropout(p=dropout_prob)
 
     def forward(self, input_q, input_k, input_v):
         Q = self.query(input_q)
         K = self.key(input_k)
+        V = self.value(input_v)
 
-        if self.value_mapping:
-            V = self.value(input_v)
-
-        energy = torch.matmul(Q, K.permute(1, 0)) / self.scale
+        energy = torch.matmul(Q, K.permute(0, 2, 1)) / self.scale
 
         attention = torch.softmax(energy, dim=-1)
+
+        # Apply dropout to the attention scores
+        attention = self.dropout(attention)
 
         out = torch.matmul(attention, V)
         out = out.contiguous()

@@ -132,7 +132,7 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
     proposals = []
     results = defaultdict(dict)
     while not done:
-        if dataset.currenttestidx % (len(dataset.testidx) // 5) == 0:
+        if dataset.currenttestidx % (len(dataset.testidx) // 10) == 0:
             print('Testing test data point %d of %d' % (dataset.currenttestidx, len(dataset.testidx)))
 
         features, labels, vn, done = dataset.load_data(is_training=False)
@@ -480,7 +480,7 @@ if __name__ == '__main__':
     ind_class_mapping = True # True
     # main_thumos2anet(ind_class_mapping)
     # main_anet2thumos(ind_class_mapping)
-    # main_thumos2anet_plus(ind_class_mapping)
-    main_anet2anet_plus(ind_class_mapping)
+    main_thumos2anet_plus(ind_class_mapping)
+    # main_anet2anet_plus(ind_class_mapping)
     
 
