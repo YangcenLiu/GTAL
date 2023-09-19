@@ -16,6 +16,7 @@ from eval.utils_eval import segment_iou
 import pdb
 
 def str2ind(categoryname, classlist):
+    categoryname = categoryname # .decode('utf-8')
     return [i for i in range(len(classlist)) if categoryname == classlist[i]][0]
 
 

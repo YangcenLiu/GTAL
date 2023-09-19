@@ -220,6 +220,7 @@ def ood_test(
         features, labels, vn, done, label_names = dataset.load_data(
             is_training=False, return_label_names=True
         )
+
         # skip if the label is not in the target class names
         keep = True
         for label_name in label_names:
@@ -233,8 +234,9 @@ def ood_test(
         if seq_len == 0:
             continue
         features = torch.from_numpy(features).float().to(device).unsqueeze(0)
+
         with torch.no_grad():
-            outputs = model(features, is_training=False, seq_len=seq_len, opt=args, ood=True)
+            outputs = model(features, is_training=False, seq_len=seq_len, opt=args)
             element_logits = outputs['cas']
             results[vn.decode("utf-8")] = {'cas': outputs['cas'], 'attn': outputs['attn']}
             pred_proposals = getattr(PM, args.proposal_method)(vn, outputs) # multiple_threshold_hamnet

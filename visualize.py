@@ -51,7 +51,7 @@ def visualize(
         idx_mapping = {int(k): int(v["thu idx"]) for k, v in class_mapping.items()}
         # dataset.filter_by_class_names(target_classes_names)
 
-    save_path = os.path.join(output_path, "Anet1.3")
+    save_path = os.path.join(output_path, "HACS")
 
     if "Thumos" in args.dataset_name:
         dmap_detect = ANETdetection(
@@ -115,7 +115,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "Thumos14 to Anet1.3",
+            "Thumos14 to HACS",
         )
 
         ax = plt.subplot(2, 1, 2)
@@ -128,7 +128,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "Anet1.2 to Anet1.3",
+            "ActivityNet1.2 to HACS",
         )
 
         plt.tight_layout()
@@ -284,10 +284,10 @@ if __name__ == "__main__":
         visualize(
             dataset,
             args,
-            result_path="proposal_results/A_plus_T_OOD_proposals.json",
-            attn_path="proposal_results/A_plus_T_OOD_activation.pkl",
-            compare_result_path="proposal_results/OOD_proposals.json",
-            compare_attn_path="proposal_results/OOD_activation.pkl",
+            result_path="proposal_results/H5_OOD_T_proposals.json",
+            attn_path="proposal_results/H5_OOD_T_activation.pkl",
+            compare_result_path="proposal_results/H5_OOD_A_proposals.json",
+            compare_attn_path="proposal_results/H5_OOD_A_activation.pkl",
             class_mapping=args.class_mapping,
         )
 

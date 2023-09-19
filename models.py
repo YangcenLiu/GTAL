@@ -1044,7 +1044,7 @@ class DELU_PYRAMID(torch.nn.Module):
         for _kernel in self.scales: # 每个scale添加一个attention windows
             self.attentions.append(AttentionPool1d(hidden_dim=embed_dim, kernel=_kernel, dropout_prob=dropout_ratio))
             self.attn_fusion.append(nn.Sequential(
-            nn.Conv1d(2*n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio)))
+            nn.Conv1d(n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio)))
 
 
         self.pool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True) # 只保留单一的scale用于Anet
@@ -1065,10 +1065,10 @@ class DELU_PYRAMID(torch.nn.Module):
         for i in range(len(self.scales) - 2, -1, -1):
             scale = self.scales[i]
             current = self.attentions[i](x)
-            current = self.attn_fusion[i+1](torch.cat((current, previous), 1)) # 把上层和这层融合
+            current = current + self.attn_fusion[i+1](previous) # 把上层和这层融合
             previous = current
         
-        output = self.attn_fusion[0](torch.cat((x, previous), 1))
+        output = self.attn_fusion[0](previous) + x
 
         return output  # 1,2,4,8...
 
@@ -1373,7 +1373,7 @@ class AcceleratedAttentionPool1d(nn.Module):
             out_list.append(center_out.view(batch_size, embed_dim, 1))
 
         # Stack and reshape the attention-weighted representations
-        output = torch.cat(out_list, dim=2)
+        output = torch.cat(out_list, dim=2) / self.kernel
 
         return output
 
@@ -1428,11 +1428,11 @@ class CrossAttention(nn.Module):
     def forward(self, input_q, input_k, input_v):
         Q = self.query(input_q)
         K = self.key(input_k)
-        V = self.value(input_v)
+        V = input_v # self.value(input_v)
 
         energy = torch.matmul(Q, K.permute(0, 2, 1)) / self.scale
 
-        attention = 2 * torch.softmax(energy/self.temp, dim=-1) - 1.
+        attention = torch.sigmoid(energy/self.temp) * 2 - 1
 
         # Apply dropout to the attention scores
         attention = self.dropout(attention)
@@ -1440,7 +1440,7 @@ class CrossAttention(nn.Module):
         out = torch.matmul(attention, V)
         out = out.contiguous()
 
-        out = self.fc_out(out)
+        out = self.fc_out(out) / input_k.size(1)
 
         return out, attention
 
