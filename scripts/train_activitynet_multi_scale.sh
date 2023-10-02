@@ -6,7 +6,7 @@ python main.py \
 --amplitude 0.2 \
 --alpha2 0.8 \
 --rat_atn 5 \
---k 5 \
+--k 65 \
 --eval_interval 20 \
 --dataset_name ActivityNet1.2 \
 --path_dataset /data0/lixunsong/Datasets/ActivityNet1.2 \
@@ -18,7 +18,7 @@ python main.py \
 --max_iter 30000 \
 --class_mapping a2t_class_mapping.json \
 --proposal_method multi_scale_multiple_threshold_hamnet \
---scales 1 \
+--scales 13 1 3 7 \
 --work_dir work_dir/multi_scale_anet_1
 
 '''

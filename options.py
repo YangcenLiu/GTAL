@@ -57,6 +57,17 @@ parser.add_argument("--rat_atn", type=int, default=9)
 parser.add_argument("--amplitude", type=float, default=0.7)
 parser.add_argument("--alpha_uct_guide", type=float, default=0.4)
 
+# -------------ddgnet---------------
+parser.add_argument('--alpha5', type=float, default=1)  # feature consistency
+parser.add_argument('--alpha6', type=float, default=1)  # complementary learning
+parser.add_argument('--weight', type=float, default=2)
+parser.add_argument('--temperature', type=float, default=0.5)
+
+parser.add_argument('--action_threshold', type=float, default=0.5)
+parser.add_argument('--background_threshold', type=float, default=0.5)
+parser.add_argument('--similarity_threshold', type=float, default=0.8)
+parser.add_argument("--top_k_rat", type=int, default=10)
+
 # -------------adv attack---------------
 parser.add_argument("--adv_attack", action="store_true", default=False)
 parser.add_argument("--epsilon", type=float, default=1e-5, help="epsilon for attack")

@@ -65,6 +65,10 @@ if __name__ == '__main__':
         loss = train(itr, dataset, args, model, optimizer, device)
         total_loss += loss
         if itr % args.eval_interval == 0 and not itr == 0:
+            if "ActivityNet" in args.dataset_name and itr<12000 and itr % 1000 != 0:
+                continue
+            if "Thumos" in args.dataset_name and itr<2500 and itr % 500 != 0:
+                continue
             print("")
             print('Iteration: %d, Loss: %.5f' % (itr, total_loss / args.eval_interval))
             total_loss = 0

@@ -193,114 +193,12 @@ def multiple_threshold_hamnet(vid_name, data_dict):
     )
     return prediction
 
-
-@torch.no_grad()
-def multiple_threshold_hamnet_modified(vid_name, data_dict, labels):
-    elem = data_dict['cas']
-    element_atn = data_dict['attn']
-    element_logits = elem * element_atn
-    pred_vid_score = get_cls_score(element_logits, rat=10)
-    cas_supp = element_logits[..., :-1]
-    cas_supp_atn = element_atn
-
-    # pred = np.where(pred_vid_score >= 0.2)[0]
-    pred = np.where(pred_vid_score >= 0.01)[0]
-
-    # NOTE: threshold
-    act_thresh = np.linspace(0.1, 0.9, 10)
-
-    if len(pred) == 0:
-        pred = np.array([np.argmax(pred_vid_score)])
-
-    pred_one_hot = np.zeros_like(labels)
-    pred_one_hot[pred] = 1
-
-    # if pred_one_hot[0] == 0 and pred_vid_score[0] >= 0.15:
-    #     pred = np.concatenate((pred, np.array([0])))
-    #     pred_one_hot[0] = 1
-    # if pred_one_hot[5] == 0 and pred_vid_score[5] >= 0.17:
-    #     pred = np.concatenate((pred, np.array([5])))
-    #     pred_one_hot[5] = 1
-    # if pred_one_hot[6] == 0 and pred_vid_score[6] >= 0.14:
-    #     pred = np.concatenate((pred, np.array([6])))
-    #     pred_one_hot[6] = 1
-
-    correct_pred = pred_one_hot * labels
-
-    cas_pred = cas_supp[0].cpu().numpy()[:, pred]
-    num_segments = cas_pred.shape[0]
-    cas_pred = np.reshape(cas_pred, (num_segments, -1, 1))
-
-    cas_pred_atn = cas_supp_atn[0].cpu().numpy()[:, [0]]
-
-    cas_pred_atn = np.reshape(cas_pred_atn, (num_segments, -1, 1))
-
-    proposal_dict = {}
-
-    for i in range(len(act_thresh)):
-        cas_temp = cas_pred.copy()
-        cas_temp_atn = cas_pred_atn.copy()
-        seg_list = []
-        for c in range(len(pred)):
-            pos = np.where(cas_temp_atn[:, 0, 0] > act_thresh[i])
-            seg_list.append(pos)
-
-        proposals = utils.get_proposal_oic_2(seg_list,
-                                             cas_temp,
-                                             pred_vid_score,
-                                             pred,
-                                             args.scale,
-                                             num_segments,
-                                             args.feature_fps,
-                                             num_segments,
-                                             gamma=args.gamma_oic)
-
-        for j in range(len(proposals)):
-            class_id = proposals[j][0][0]
-            if class_id not in proposal_dict.keys():
-                proposal_dict[class_id] = []
-            proposal_dict[class_id] += proposals[j]
-
-    final_proposals = []
-    for class_id in proposal_dict.keys():
-        final_proposals.append(
-            utils.soft_nms(proposal_dict[class_id], 0.7, sigma=0.3))
-
-    segment_predict = []
-    for i in range(len(final_proposals)):
-        for j in range(len(final_proposals[i])):
-            [c_pred, c_score, t_start, t_end] = final_proposals[i][j]
-            segment_predict.append([t_start, t_end, c_score, c_pred])
-
-    segment_predict = np.array(segment_predict)
-    segment_predict = filter_segments(segment_predict, vid_name.decode())
-
-    video_lst, t_start_lst, t_end_lst = [], [], []
-    label_lst, score_lst = [], []
-    for i in range(np.shape(segment_predict)[0]):
-        video_lst.append(vid_name.decode())
-        t_start_lst.append(segment_predict[i, 0])
-        t_end_lst.append(segment_predict[i, 1])
-        score_lst.append(segment_predict[i, 2])
-        label_lst.append(segment_predict[i, 3])
-    prediction = pd.DataFrame(
-        {
-            "video-id": video_lst,
-            "t-start": t_start_lst,
-            "t-end": t_end_lst,
-            "label": label_lst,
-            "score": score_lst,
-        }
-    )
-    return prediction, correct_pred, pred_one_hot
-
 @torch.no_grad()
 def multi_scale_multiple_threshold_hamnet(vid_name, data_dict):
     elem = data_dict['cas']
     element_atn = data_dict['attn']
-    act_thresh_cas = np.arange(0.1, 0.9, 10)
-
     proposal_dict = {}
+
     for k in range(len(elem)): # multiple scale
 
         element_logits = elem[k] * element_atn[k]
@@ -350,6 +248,10 @@ def multi_scale_multiple_threshold_hamnet(vid_name, data_dict):
             for j in range(len(proposals)):
 
                 class_id = proposals[j][0][0]
+
+                # ratio = (proposals[j][0][3] - proposals[j][0][2])/vid_len
+                # if len_list[k]> ratio or  ratio> len_list[k+1]:
+                #     continue
 
                 if class_id not in proposal_dict.keys():
                     proposal_dict[class_id] = []

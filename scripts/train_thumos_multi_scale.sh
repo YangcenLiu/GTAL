@@ -19,7 +19,7 @@ python main.py \
 --weight_decay 0.001 \
 --AWM BWA_fusion_dropout_feat_v2 \
 --proposal_method multi_scale_multiple_threshold_hamnet \
---scales 13 \
+--scales 1, 3, 7, 15 \
 --work_dir work_dir/thumos_13
 
 '''

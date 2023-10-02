@@ -212,6 +212,11 @@ def main_thumos2anet(ind_class_mapping):
 
     # Thumos 14
     args.ckpt_path = "ckpt/best_delu_thumos.pkl"
+
+    # args.ckpt_path = 'ckpt/best_Thumos14-DDG_Net.pkl'
+    # args.AWM = 'DDG_Net'
+    args.proposal_method = 'multiple_threshold_hamnet'
+
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
     args.num_class = 20
@@ -219,13 +224,13 @@ def main_thumos2anet(ind_class_mapping):
     args.max_seqlen = 320
     args.scales = [1]
     args.class_mapping = "class_mapping/t2a_class_mapping.json"
-    
+    args.use_model = "DELU"
+
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
-
-    '''
+    model.load_state_dict(torch.load(args.ckpt_path), strict=True)
+    # model.load_state_dict(torch.load("work_dir/thumos_pyramid/ckpt/best_DELU_PYRAMID.pkl"), strict=True)
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -238,7 +243,6 @@ def main_thumos2anet(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-    '''
 
     # Anet
     args.dataset_name = "ActivityNet1.2"
@@ -246,7 +250,7 @@ def main_thumos2anet(ind_class_mapping):
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [13]
+    args.scales = [17] # [1, 3, 7, 15]
     args.mapping = "class_mapping/t2a_class_mapping.json"
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
@@ -288,13 +292,14 @@ def main_anet2thumos(ind_class_mapping):
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [13] # 13
+    args.scales = [17] # 13
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    # model.load_state_dict(torch.load("/data0/lixunsong/liuyangcen/ECCV2022-DELU/work_dir/thumos_pyramid/ckpt/best_DELU_PYRAMID.pkl"), strict=False)
     
-    '''
+    
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
 
     print(
@@ -307,15 +312,15 @@ def main_anet2thumos(ind_class_mapping):
     )
     ood_max_map = np.array(dmap)
     print('ActivityNet1.2: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
-    '''
-
+    
+    exit()
     # Thumos 14
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
     args.num_class = 20
     args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
     args.max_seqlen = 320
-    args.scales = [9]
+    args.scales = [17]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -379,13 +384,14 @@ def main_thumos2anet_plus(ind_class_mapping):
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
     '''
+    exit()
     # Anet
     args.dataset_name = "ActivityNet1.3"
     args.dataset = "AntPlusSampleDataset"
     args.num_class = 9
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
     args.max_seqlen = 100
-    args.scales = [5]
+    args.scales = [1]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -433,7 +439,7 @@ def main_anet2hacs(ind_class_mapping):
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    model.load_state_dict(torch.load(args.ckpt_path), strict=False)   
     '''
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
 
@@ -454,7 +460,7 @@ def main_anet2hacs(ind_class_mapping):
     args.num_class = 9
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
     args.max_seqlen = 300
-    args.scales = [5]
+    args.scales = [1,3,5]
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
@@ -483,10 +489,8 @@ def main_anet2hacs(ind_class_mapping):
 
 
 if __name__ == '__main__':
-    ind_class_mapping = True # True
-    # main_thumos2anet(ind_class_mapping)
+    ind_class_mapping = False # True
+    main_thumos2anet(ind_class_mapping)
     # main_anet2thumos(ind_class_mapping)
     # main_thumos2anet_plus(ind_class_mapping)
-    main_anet2hacs(ind_class_mapping)
-    
-
+    # main_anet2hacs(ind_class_mapping)

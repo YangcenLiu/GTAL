@@ -51,7 +51,7 @@ def visualize(
         idx_mapping = {int(k): int(v["thu idx"]) for k, v in class_mapping.items()}
         # dataset.filter_by_class_names(target_classes_names)
 
-    save_path = os.path.join(output_path, "HACS")
+    save_path = os.path.join(output_path, "ThumosIND")
 
     if "Thumos" in args.dataset_name:
         dmap_detect = ANETdetection(
@@ -115,7 +115,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "Thumos14 to HACS",
+            "DELU",
         )
 
         ax = plt.subplot(2, 1, 2)
@@ -128,7 +128,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "ActivityNet1.2 to HACS",
+            "DDG_NET",
         )
 
         plt.tight_layout()
@@ -174,7 +174,7 @@ def plot_single(
 
     # plot the start and end times as lines for each ground truth
     for _, row in video_df_gt.iterrows():
-        fps = fpslist[row["video-id"]]
+        # fps = fpslist[row["video-id"]]
         start = row["t-start"] * 16 / 25
         end = row["t-end"] * 16 / 25
         ax.plot(
@@ -184,7 +184,7 @@ def plot_single(
     if video_id in proposals.keys():
         # get the rows for this video from proposals
         video_df_proposals = proposals[video_id]
-        fps = fpslist[video_id]
+        # fps = fpslist[video_id]
         # plot the start and end times as lines for each proposal
         for row in video_df_proposals:
             start = row["segment"][0]
@@ -194,7 +194,7 @@ def plot_single(
             label = row["label"]
 
             linestyle = (
-                "-" if anet_plus_json[label] not in gt_labels else "solid"
+                "-" if thumos_json[label] not in gt_labels else "solid"
             )  # Dashed line if label not in ground truth labels
 
             ax.plot(
@@ -212,7 +212,11 @@ def plot_single(
     ax.axvline(duration)
     ax.set_ylim(-0.2, 1.2)
 
-    attention = attn[video_id]["attn"][0][0, :, 0].cpu().numpy()
+    if isinstance(attn[video_id]["attn"], list):
+        attention = attn[video_id]["attn"][0][0, :, 0].cpu().numpy()
+    else:
+        attention = attn[video_id]["attn"][0, :, 0].cpu().numpy()
+
     timescale = np.linspace(0, duration, len(attention), axis=0)  # original timescale
     if timescale.ndim > 1:
         timescale = timescale[:,0]
@@ -229,7 +233,7 @@ def plot_single(
 
 if __name__ == "__main__":
     args = options.parser.parse_args()
-    name = "anet1.3"
+    name = "thumos"
 
     if name == "anet1.2":
         args.dataset_name = "ActivityNet1.2"
@@ -237,7 +241,7 @@ if __name__ == "__main__":
         args.num_class = 100
         args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
         args.max_seqlen = 60
-        args.class_mapping = "t2a_class_mapping.json"
+        args.class_mapping = "class_mapping/t2a_class_mapping.json"
 
         dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
         visualize(

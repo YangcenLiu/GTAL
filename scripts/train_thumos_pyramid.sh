@@ -18,5 +18,5 @@ python main.py \
 --dataset SampleDataset \
 --weight_decay 0.001 \
 --AWM BWA_fusion_dropout_feat_v2 \
---scales  1 3 7 \
---work_dir work_dir/thumos_pyramid
+--scales  1 3 5 7 13 \
+--work_dir work_dir/thumos_pyramid_0.01

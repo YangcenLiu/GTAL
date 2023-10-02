@@ -5,6 +5,8 @@ import random
 import os
 import options
 
+# We excluded three test videos (270, 1292, 1496) as previous work did.
+INVALID_TEST_CASE = ["video_test_0000270", "video_test_0001292", "video_test_0001496"]
 
 class SampleDataset:
     def __init__(self, args, mode="both", sampling='random', classwise_feature_mapping=True):
@@ -68,7 +70,7 @@ class SampleDataset:
             if s.decode("utf-8") == "validation":  # Specific to Thumos14
 
                 self.trainidx.append(i)
-            elif s.decode("utf-8") == "test":
+            elif s.decode("utf-8") == "test" and self.videonames[i].decode("utf-8") not in INVALID_TEST_CASE:
                 self.testidx.append(i)
 
     def classwise_feature_mapping(self):
