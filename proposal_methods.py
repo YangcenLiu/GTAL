@@ -249,10 +249,6 @@ def multi_scale_multiple_threshold_hamnet(vid_name, data_dict):
 
                 class_id = proposals[j][0][0]
 
-                # ratio = (proposals[j][0][3] - proposals[j][0][2])/vid_len
-                # if len_list[k]> ratio or  ratio> len_list[k+1]:
-                #     continue
-
                 if class_id not in proposal_dict.keys():
                     proposal_dict[class_id] = []
 

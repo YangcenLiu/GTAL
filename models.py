@@ -64,7 +64,7 @@ class DDG_Net(nn.Module):
                                                        nn.LeakyReLU(0.2),
                                                        nn.Conv1d(512, 1, (1,)),
                                                        nn.Dropout(0.5),
-                                                       nn.Sigmoid()) for _ in range(2)])
+                                                       nn.Sigmoid()) for _ in range(2)]) # 原版DELU的attention
         self.activation = nn.LeakyReLU(0.2)
         self.action_threshold = args['opt'].action_threshold
         self.background_threshold = args['opt'].background_threshold
@@ -74,8 +74,8 @@ class DDG_Net(nn.Module):
         self.weight = 1 / args['opt'].weight
 
     def forward(self, vfeat, ffeat, is_training=True, **args):
-        ori_vatn = self.attentions[0](vfeat)
-        ori_fatn = self.attentions[1](ffeat)  # B, 1, T
+        ori_vatn = self.attentions[0](vfeat) # 原版DELU的attention
+        ori_fatn = self.attentions[1](ffeat) # B, 1, T
 
         action_mask, background_mask, ambiguous_mask, temp_mask, no_action_mask, no_background_mask \
             = self.action_background_mask(ori_vatn, ori_fatn)
@@ -229,6 +229,231 @@ class DDG_Net(nn.Module):
 
         return {'feat_loss': feat_loss}
 
+class Scale_Adapter(torch.nn.Module):
+    def __init__(self, embed_dim, n_class, scale, **args):
+        super().__init__()
+        self.scale = scale # 13
+
+        dropout_ratio = 0.2
+
+        self.context_fusion = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_ratio),
+        )
+        self.context_classifier = nn.Sequential(
+            nn.Conv1d(embed_dim, embed_dim, 1),
+            nn.ReLU(),
+            nn.Conv1d(embed_dim, n_class+1, 1),
+        )
+        self.context_attention = nn.Sequential(
+            nn.Conv1d(embed_dim, embed_dim, 1),
+            nn.ReLU(),
+            nn.Conv1d(embed_dim, 1, 1),
+        )
+
+        '''
+        nn.Sequential(nn.Conv1d(embed_dim, 512, (3,), padding=1),
+                                       nn.LeakyReLU(0.2),
+                                       nn.Dropout(0.5),
+                                       nn.Conv1d(512, 512, (3,), padding=1),
+                                       nn.LeakyReLU(0.2),
+                                       nn.Conv1d(512, 1, (1,)))
+        '''
+
+        '''
+        nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        '''
+
+        self.padding = nn.ZeroPad2d((self.scale//2, self.scale//2, 0, 0))
+        self.pool = nn.MaxPool1d(self.scale // 2, stride=1)
+
+        self.refine_pool = RefineAvgPool(scale)
+
+    def init_zero_weights(self):
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                torch_init.constant_(module.weight, 0)
+                if module.bias is not None:
+                    torch_init.constant_(module.bias, 0)
+
+    def forward(self, input_feat):
+        '''
+        模仿P-MIL的写法
+        注意这里的cas应该是logits 不然不好归一化
+        '''
+
+        # feat b,e,t
+        cfeat = input_feat # center snippets
+        padded_feat = self.pool(self.padding(input_feat))
+        lfeat = padded_feat[:,:,:padded_feat.size(-1)-self.scale//2-1]
+        rfeat = padded_feat[:,:,self.scale//2+1:]
+        feat = torch.cat((lfeat-cfeat, rfeat-cfeat), dim=1).transpose(-1, -2) # context feature b t e
+        feat_fuse = self.context_fusion(feat).transpose(-1, -2) # b e t
+        context_cas = self.context_classifier(feat_fuse) # b, c, t
+        context_attn = self.context_attention(feat_fuse) # B, 1, t
+
+        return context_cas, context_attn
+    
+    def refine_score(self, seq, alpha):
+        return self.refine_pool(seq, alpha)
+
+class DELU_Adapter(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        _kernel = 13
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+        
+        kernel_size = 3
+        self.student_adapter = Scale_Adapter(embed_dim, n_class, kernel_size)
+        self.teacher_adapter = Scale_Adapter(embed_dim, n_class, kernel_size)
+
+        self.pool = RefineAvgPool(3)
+
+        self.apply(weights_init)
+
+        self.teacher_adapter.init_zero_weights()
+        self.student_adapter.init_zero_weights()
+    
+    def EMA_update(self, alpha=1.0): # , global_step):
+        # Use the true average until the exponential average is more correct
+        # alpha = min(1 - 1 / (global_step + 1), alpha)
+        for ema_param, param in zip(self.teacher_adapter.parameters(), self.student_adapter.parameters()):
+            ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+    
+    def adapter_update(self, inputs):
+        with torch.no_grad():
+            feat = inputs.transpose(-1, -2)
+            v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+            f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+            atn = (f_atn + v_atn) / 2 # b,1,t
+            nfeat = torch.cat((vfeat, ffeat), 1)
+            nfeat = self.fusion(nfeat)
+            cas = self.classifier(nfeat) # b,e,t
+
+        s_context_cas, s_context_atn = self.student_adapter(nfeat)
+        s_cas = cas + s_context_cas
+        s_atn = atn + s_context_atn
+
+        with torch.no_grad():
+            t_context_cas, t_context_atn = self.teacher_adapter(nfeat)
+            t_cas = self.teacher_adapter.refine_score(cas + t_context_cas, 1.01)
+            t_atn = self.teacher_adapter.refine_score(atn + t_context_atn, 1.01)
+        
+        outputs = {'t_cas': t_cas.transpose(-1, -2),
+                   't_atn': t_atn.transpose(-1, -2),
+                   's_cas': s_cas.transpose(-1, -2),
+                   's_atn': s_atn.transpose(-1, -2),
+                   }
+                   
+        return outputs
+    
+    def softmax_mse_loss(self, input_logits, target_logits):
+        """Takes softmax on both sides and returns MSE loss
+
+        Note:
+        - Returns the sum over all examples. Divide by the batch size afterwards
+        if you want the mean.
+        - Sends gradients to inputs but not the targets.
+        """
+        assert input_logits.size() == target_logits.size()
+
+        input_softmax = F.softmax(input_logits, dim=2)
+        target_softmax = F.softmax(target_logits, dim=2)
+        
+        mse_loss = F.mse_loss(input_softmax, target_softmax, reduction='mean') / input_softmax.size(0)  # 对损失求和并除以批次大小
+
+        return mse_loss
+    
+
+    def mse_loss(self, input_atn, target_atn):
+        assert input_atn.size() == target_atn.size()
+        mse_loss = F.mse_loss(input_atn, target_atn, reduction='mean')
+
+        return mse_loss
+        
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        t_context_cas, t_context_atn = self.student_adapter(nfeat)
+        x_cls = x_cls + t_context_cas
+        x_atn = x_atn + t_context_atn
+
+        if "ActivityNet" in args["opt"].dataset_name:
+            x_cls = self.apool(x_cls)
+            x_atn = self.apool(x_atn)
+            f_atn = self.apool(f_atn)
+            v_atn = self.apool(v_atn)
+
+        outputs = {'feat': nfeat.transpose(-1, -2),
+                   'cas': x_cls.transpose(-1, -2),
+                   'attn': x_atn.transpose(-1, -2),
+                   'v_atn': v_atn.transpose(-1, -2),
+                   'f_atn': f_atn.transpose(-1, -2),
+                   }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        t_atn, t_cas, s_atn, s_cas = outputs['t_atn'], outputs['t_cas'], outputs['s_atn'], outputs['s_cas']
+
+        atn_loss = self.mse_loss(t_atn, s_atn)
+        cas_loss = self.softmax_mse_loss(t_cas, s_cas)
+
+        total_loss = (atn_loss+cas_loss) / 2
+
+        loss_dict = {
+            'total_loss': total_loss,
+            'cas_loss': cas_loss,
+            'atn_loss': atn_loss
+        }
+
+        return total_loss, loss_dict
 
 class DELU(torch.nn.Module):
     def __init__(self, n_feature, n_class, device="cuda:0", **args):
@@ -261,8 +486,10 @@ class DELU(torch.nn.Module):
         )
 
         _kernel = 13
-        self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
+
+        self.pool = RefineAvgPool(3)
 
         self.apply(weights_init)
 
@@ -276,11 +503,16 @@ class DELU(torch.nn.Module):
         x_cls = self.classifier(nfeat)
 
         if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.pool(x_cls)
-            x_atn = self.pool(x_atn)
-            f_atn = self.pool(f_atn)
-            v_atn = self.pool(v_atn)
-
+            x_cls = self.apool(x_cls)
+            x_atn = self.apool(x_atn)
+            f_atn = self.apool(f_atn)
+            v_atn = self.apool(v_atn)
+        '''
+        x_cls = self.pool(x_cls)
+        x_atn = self.pool(x_atn)
+        f_atn = self.pool(f_atn)
+        v_atn = self.pool(v_atn)
+        '''
         outputs = {'feat': nfeat.transpose(-1, -2),
                    'cas': x_cls.transpose(-1, -2),
                    'attn': x_atn.transpose(-1, -2),
@@ -856,7 +1088,9 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         for _kernel in self.scales:
             # self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
             # self.fusions.append(nn.Conv1d(embed_dim, embed_dim, 1))
-            self.pool.append(DirtyAvgPool(_kernel))
+            self.pool.append(RefineAvgPool(_kernel))
+        
+        self.apool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True)
 
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_ratio),
@@ -889,6 +1123,11 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
         x_cls = self.classifier(nfeat)
+
+        x_cls = self.apool(x_cls)
+        x_atn = self.apool(x_atn)
+        f_atn = self.apool(f_atn)
+        v_atn = self.apool(v_atn)
 
         x_cls = self.pool_forward(x_cls)
         x_atn = self.pool_forward(x_atn)
@@ -1211,7 +1450,7 @@ class DELU_PYRAMID(torch.nn.Module):
             self.attn_fusion.append(nn.Sequential(
             nn.Conv1d(n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio)))
 
-        # self.pool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True) # 只保留单一的scale用于Anet
+        self.apool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True) # 只保留单一的scale用于Anet
 
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_ratio),
@@ -1598,8 +1837,10 @@ class DELU_DDG(torch.nn.Module):
         )
 
         _kernel = 13
-        self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
+
+        self.pool = RefineAvgPool(3)
 
         self.apply(weights_init)
 
@@ -1612,10 +1853,15 @@ class DELU_DDG(torch.nn.Module):
         x_cls = self.classifier(nfeat)
 
         if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.pool(x_cls)
-            x_atn = self.pool(x_atn)
-            f_atn = self.pool(f_atn)
-            v_atn = self.pool(v_atn)
+            x_cls = self.apool(x_cls)
+            x_atn = self.apool(x_atn)
+            f_atn = self.apool(f_atn)
+            v_atn = self.apool(v_atn)
+        
+        x_cls = self.pool(x_cls)
+        x_atn = self.pool(x_atn)
+        f_atn = self.pool(f_atn)
+        v_atn = self.pool(v_atn)
 
         outputs = {
             'feat': nfeat.transpose(-1, -2),
@@ -1940,101 +2186,27 @@ class CrossAttention(nn.Module):
         out = self.fc_out(out)
 
         return out, attention
-
-class NewSubclassBranch(nn.Module):
-    def __init__(self, num_sub_class=50, num_class=20):
-        super(NewSubclassBranch, self).__init__()
-
-        self.embed_dim = 2048
-        self.num_sub_class_per_class = num_sub_class
-        self.num_sub_class = num_sub_class # YZ: num_sub_class changed to the number of sub-classes in each class
-        self.num_class = num_class
-
-        self.register_buffer("sub_classtype", torch.randn((self.num_sub_class, self.embed_dim)))
-        self.register_buffer("class_type", torch.randn((self.num_class+1, self.embed_dim)))
-        self.register_buffer("fb_type", torch.randn((2, self.embed_dim)))
-
-        self.snippet_to_sub_mapping = CrossAttention(self.embed_dim, True) # 从snippet到子类的similarity matrix 以及subclass prototype的重表征
-        self.sub_to_fg_mapping = CrossAttention(self.embed_dim, False) # 从sub_class到前后景, 且只取2分类结果, 这里用主分支和otsu进行约束
-        self.sub_to_class_mapping = CrossAttention(self.embed_dim, False) # 从sub_classc到前景class
-    
-    def update(self):
-        pass
-
-    def forward(self, snippets):
-        '''
-        snippets: (b, c, t)
-        '''
-        b, _, t = snippets.size()
-        snippets_feature = rearrange(snippets, 'b c t -> (b t) c')
-
-        sub_class_aggregation_feature, snip2sub_sim_matrix = self.snippet_to_sub_mapping(snippets_feature, self.sub_classtype, self.sub_classtype)  # map to sub_class space
-        sub2fg_sim_matrix = self.sub_to_fg_mapping(sub_class_aggregation_feature, self.fb_type)
-        sub2class_sim_matrix = self.sub_to_class_mapping(sub_class_aggregation_feature, self.class_type)
-
-        snip2sub_sim_matrix = rearrange(snip2sub_sim_matrix, '(b t) s -> b t s', b=b)
-        sub2fg_sim_matrix = rearrange(sub2fg_sim_matrix, '(b t) e -> b t e', b=b)[:,:,0:1]
-        sub2class_sim_matrix = rearrange(sub2class_sim_matrix, '(b t) c -> b t c', b=b)
-
-        return snip2sub_sim_matrix, sub2fg_sim_matrix, sub2class_sim_matrix  # Return the processed snippets
-
-class InverseAvgPool1d(nn.Module):
-    def __init__(self, kernel_size):
-        super(InverseAvgPool1d, self).__init__()
-        self.kernel_size = kernel_size
-
-    def forward(self, x):
-        # Pad the tenasor along the last dimension
-        # x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2))
-        left_pad = x[:, :, :1]  # Take the first element along the last dimension
-        right_pad = x[:, :, -1:]  # Take the last element along the last dimension
-        x_padded = F.pad(x, (self.kernel_size // 2, self.kernel_size // 2), 'constant', value=0)  # Pad with zeros
-        x_padded[:, :, :self.kernel_size // 2] = left_pad  # Replace left padding with x[0]
-        x_padded[:, :, -self.kernel_size // 2:] = right_pad  # Replace right padding with x[-1]
-
-        # Create an empty tensor with the same size as x
-        inverse = torch.zeros_like(x_padded)
-
-        # Handle the first element separately
-        inverse[..., 0] = self.kernel_size * x[..., 0]
-
-        # Iterate over the tensor along the dimension of size kernel_size
-        for i in range(x.size(-1) - 1):
-            inverse[..., i + self.kernel_size // 2 + 1] = inverse[..., i - self.kernel_size // 2] + self.kernel_size * (x_padded[..., i + 1] - x_padded[..., i])
-
-        # Remove padding
-        inverse = inverse[..., self.kernel_size // 2: -self.kernel_size // 2]
-
-        return inverse
-    
-class DirtyAvgPool(nn.Module):
-        def __init__(self, scale):
-            super(DirtyAvgPool, self).__init__()
-            self.scale = scale
+   
+class RefineAvgPool(nn.Module):
+        def __init__(self, scale=1):
+            super(RefineAvgPool, self).__init__()
+            self.scale = scale # 45, 1.0
             self.padding = nn.ZeroPad2d((self.scale//2, self.scale//2, 0, 0))
+            self.pool = nn.MaxPool1d(self.scale // 2, stride=1)
 
-        def forward(self, x):
-            return x
+        def forward(self, x, alpha=1.0):
+
             if self.scale == 1:
                 return x
 
             b, e, t = x.size()
             y = x
-            # print(y.size())
-            x = self.padding(x)
-            # print(x.size())
-            for i in range(self.scale//2, x.size(-1)-self.scale//2):
-                start = i - self.scale//2
-                end = i + self.scale//2+1
-                window = x[:,:,start:end]
 
-                # print(window.size(), self.scale)
-                center=x[:,:,i]
-                left = window[:,:,:self.scale//2].max(dim=-1)[0]
-                right = window[:,:,-self.scale//2:].max(dim=-1)[0]
-                replace = torch.min(left, right)
-                mask = center < replace
-                # center[mask] = center[mask] + (replace[mask] - center[mask]) * 0.8
-                center[mask] = center[mask] - (replace[mask] - center[mask]) * 0.3
-                y[:,:,i-self.scale//2] = center
+            x = self.pool(self.padding(x)) # maxpool
+            replace = torch.min(x[:,:,:x.size(-1)-self.scale//2-1],x[:,:,self.scale//2+1:]) # 左右取min
+
+            mask = y < replace
+
+            y[mask] = alpha * y[mask] + (1-alpha) * replace[mask] # y[mask] + (replace[mask] - y[mask]) * (-0.3)
+
             return y
