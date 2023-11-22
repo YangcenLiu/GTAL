@@ -445,5 +445,4 @@ def compute_average_precision_detection(
     
     
     # draw_interpolated_prec_rec(precision_cumsum[0, :], recall_cumsum[0, :])
-    # exit()
     return ap

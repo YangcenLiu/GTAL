@@ -158,6 +158,69 @@ def convert_one_hot_label(label, class_mapper, num_classes):
             print("class {} of video {} not in class mapper".format(cid, vid))
     return new_label
 
+def snippet_mAP(results, gt, class_mapping=None):
+
+    Acc = []
+    Attn = []
+
+    class_mapping = {10:3,29:10,31:11,35:12,38:13,63:14,74:15,15:18} # a2t 测试thumos2anet
+    # class_mapping = {3:10,10:29,11:31,12:35,13:38,14:68,15:74,18:15} # t2a 测试anet2thumos
+
+    for vname in results.keys():
+        cas = results[vname]["cas"]
+        cas = torch.argmax(cas, dim=-1, keepdim=True)
+
+        attn = results[vname]["attn"]
+        proposals = gt[gt["video-id"] == vname]
+
+        gt_p = torch.zeros_like(cas) + 100
+
+        for index, row in proposals.iterrows():
+            start = row["t-start"]
+            end = row["t-end"]
+            label = row["label"]
+            if start >= cas.size(1):
+                continue
+
+            if end >= cas.size(1):
+                end = cas.size(1)-1
+            
+            for t in range(start, end+1):
+                gt_p[:,t,0] = class_mapping[label]
+                # print(label)
+        
+        for t in range(cas.size(1)):
+            if gt_p[:,t,0] == 100: # 是否考虑后景
+                continue
+            if cas[:,t,0] == gt_p[:,t,0]:
+                Acc.append(1)
+            else:
+                Acc.append(0)
+            Attn.append(attn[:,t,0])
+    print(sum(Attn)/len(Attn))
+    exit()
+    print(sum(Acc)/len(Acc)*100)
+
+    # Define the number of bins or intervals
+    num_bins = 10
+
+    # Initialize lists to store accuracy for each interval
+    accuracy_by_bin = []
+
+    # Initialize the bin edges
+    bin_edges = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
+    print(bin_edges)
+
+    # Calculate accuracy in each bin
+    for i in range(num_bins):
+        lower_bound = bin_edges[i]
+        upper_bound = bin_edges[i + 1]
+        in_bin = [Acc[j] for j in range(len(Attn)) if lower_bound <= Attn[j] < upper_bound]
+        accuracy = sum(in_bin) / len(in_bin) * 100 if len(in_bin) > 0 else 0
+        accuracy_by_bin.append(accuracy)
+    print(accuracy_by_bin)
+
+    exit()
 
 @torch.no_grad()
 def ood_test(
@@ -169,7 +232,9 @@ def ood_test(
     save_activation=False,
     itr=-1,
     class_mapping_param=None,
+    snippet_classification=False
 ):
+    class_mapping_name = class_mapping
     if class_mapping and class_mapping_param==None: # 走的上分支
         class_mapping = json.load(open(class_mapping, "r"))
 
@@ -201,7 +266,7 @@ def ood_test(
         source_class_indices = class_mapping_param["source_class_indices"]
         idx_mapping = class_mapping_param["idx_mapping"]
         reversed_idx_mapping = class_mapping_param["reversed_idx_mapping"]
-
+    
     model.eval()
     done = False
     instance_logits_stack = []
@@ -288,6 +353,9 @@ def ood_test(
         dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args,subset="test", selected_class_indices=target_class_indices)
         dmap_detect.prediction = proposals
         dmap = dmap_detect.evaluate()
+        if snippet_classification: # classification
+            smap = snippet_mAP(results, dmap_detect.ground_truth)
+        dmap = dmap_detect.evaluate()
     else:
         iou = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 
@@ -299,6 +367,9 @@ def ood_test(
             selected_class_indices=target_class_indices,
         )
         dmap_detect.prediction = proposals
+
+        if snippet_classification: # classification
+            smap = snippet_mAP(results, dmap_detect.ground_truth)
         dmap = dmap_detect.evaluate()
 
     if "ActivityNet1.2" in args.dataset_name:
@@ -306,7 +377,7 @@ def ood_test(
     elif "Thumos14" in args.dataset_name:
         labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101)
     elif "ActivityNet1.3" in args.dataset_name:
-        if "a2a_plus_class_mapping" in args.class_mapping:
+        if "a2a_plus_class_mapping" in class_mapping_name:
             labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 101) # 这个是写IND的class数
         else:
             labels_stack = convert_one_hot_label(labels_stack, reversed_idx_mapping, 21)
@@ -325,7 +396,10 @@ def ood_test(
             ]
         )
     )
-    print("mAP Avg ALL: {:.3f}".format(sum(dmap) / len(iou) * 100))
+    if 'Thumos14' in args.dataset_name:
+        print('mAP 0.1-0.7: {:.3f}'.format(sum(dmap[:7]) / 7 * 100))
+    else:
+        print('mAP 0.5-0.95: {:.3f}'.format(sum(dmap) / len(iou) * 100))
 
     mAP_Avg_ALL = sum(dmap) / len(iou) * 100
 

@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import models
 import torch.nn.init as torch_init
+from torch.autograd import grad
+import matplotlib.pyplot as plt
 
 from edl_loss import EvidenceLoss
 from edl_loss import relu_evidence, exp_evidence, softplus_evidence
@@ -229,79 +231,6 @@ class DDG_Net(nn.Module):
 
         return {'feat_loss': feat_loss}
 
-class Scale_Adapter(torch.nn.Module):
-    def __init__(self, embed_dim, n_class, scale, **args):
-        super().__init__()
-        self.scale = scale # 13
-
-        dropout_ratio = 0.2
-
-        self.context_fusion = nn.Sequential(
-            nn.Linear(embed_dim * 2, embed_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_ratio),
-        )
-        self.context_classifier = nn.Sequential(
-            nn.Conv1d(embed_dim, embed_dim, 1),
-            nn.ReLU(),
-            nn.Conv1d(embed_dim, n_class+1, 1),
-        )
-        self.context_attention = nn.Sequential(
-            nn.Conv1d(embed_dim, embed_dim, 1),
-            nn.ReLU(),
-            nn.Conv1d(embed_dim, 1, 1),
-        )
-
-        '''
-        nn.Sequential(nn.Conv1d(embed_dim, 512, (3,), padding=1),
-                                       nn.LeakyReLU(0.2),
-                                       nn.Dropout(0.5),
-                                       nn.Conv1d(512, 512, (3,), padding=1),
-                                       nn.LeakyReLU(0.2),
-                                       nn.Conv1d(512, 1, (1,)))
-        '''
-
-        '''
-        nn.Dropout(dropout_ratio),
-            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.7),
-            nn.Conv1d(embed_dim, n_class + 1, (1,))
-        '''
-
-        self.padding = nn.ZeroPad2d((self.scale//2, self.scale//2, 0, 0))
-        self.pool = nn.MaxPool1d(self.scale // 2, stride=1)
-
-        self.refine_pool = RefineAvgPool(scale)
-
-    def init_zero_weights(self):
-        for module in self.modules():
-            if isinstance(module, (nn.Linear, nn.Conv1d)):
-                torch_init.constant_(module.weight, 0)
-                if module.bias is not None:
-                    torch_init.constant_(module.bias, 0)
-
-    def forward(self, input_feat):
-        '''
-        模仿P-MIL的写法
-        注意这里的cas应该是logits 不然不好归一化
-        '''
-
-        # feat b,e,t
-        cfeat = input_feat # center snippets
-        padded_feat = self.pool(self.padding(input_feat))
-        lfeat = padded_feat[:,:,:padded_feat.size(-1)-self.scale//2-1]
-        rfeat = padded_feat[:,:,self.scale//2+1:]
-        feat = torch.cat((lfeat-cfeat, rfeat-cfeat), dim=1).transpose(-1, -2) # context feature b t e
-        feat_fuse = self.context_fusion(feat).transpose(-1, -2) # b e t
-        context_cas = self.context_classifier(feat_fuse) # b, c, t
-        context_attn = self.context_attention(feat_fuse) # B, 1, t
-
-        return context_cas, context_attn
-    
-    def refine_score(self, seq, alpha):
-        return self.refine_pool(seq, alpha)
-
 class DELU_Adapter(torch.nn.Module):
     def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
@@ -309,128 +238,157 @@ class DELU_Adapter(torch.nn.Module):
         dropout_ratio = args['opt'].dropout_ratio
         self.device = device
 
-        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
-        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.n_class = args["opt"].num_class
 
-        self.feat_encoder = nn.Sequential(
-            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(dropout_ratio)
-        )
-
-        self.fusion = nn.Sequential(
-            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(dropout_ratio)
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout_ratio),
-            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.7),
-            nn.Conv1d(embed_dim, n_class + 1, (1,))
-        )
+        self.student = DELU(n_feature, n_class, opt=args["opt"])
+        self.teacher = DELU(n_feature, n_class, opt=args["opt"])
 
         _kernel = 13
         self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
         
-        kernel_size = 3
-        self.student_adapter = Scale_Adapter(embed_dim, n_class, kernel_size)
-        self.teacher_adapter = Scale_Adapter(embed_dim, n_class, kernel_size)
+        scale = args["opt"].refine_scale # 47
+        self.refine_alpha = args["opt"].refine_alpha
 
-        self.pool = RefineAvgPool(3)
+        self.apply(weights_init) # 47:0.0 5:1.5
 
-        self.apply(weights_init)
+        self.b = 0
 
-        self.teacher_adapter.init_zero_weights()
-        self.student_adapter.init_zero_weights()
+        self.refine_pool = RefineAvgPool(scale)
+    
+    def refine_score(self, seq, alpha, return_mask=False):
+        return self.refine_pool(seq, alpha, return_mask=return_mask)
     
     def EMA_update(self, alpha=1.0): # , global_step):
+        return None
         # Use the true average until the exponential average is more correct
-        # alpha = min(1 - 1 / (global_step + 1), alpha)
-        for ema_param, param in zip(self.teacher_adapter.parameters(), self.student_adapter.parameters()):
+        for ema_param, param in zip(self.teacher.parameters(), self.student.parameters()):
             ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
     
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
     def adapter_update(self, inputs):
-        with torch.no_grad():
-            feat = inputs.transpose(-1, -2)
-            v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
-            f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
-            atn = (f_atn + v_atn) / 2 # b,1,t
-            nfeat = torch.cat((vfeat, ffeat), 1)
-            nfeat = self.fusion(nfeat)
-            cas = self.classifier(nfeat) # b,e,t
 
-        s_context_cas, s_context_atn = self.student_adapter(nfeat)
-        s_cas = cas + s_context_cas
-        s_atn = atn + s_context_atn
+        self.student.train()
+        self.dropout_ratio = 0.7
 
         with torch.no_grad():
-            t_context_cas, t_context_atn = self.teacher_adapter(nfeat)
-            t_cas = self.teacher_adapter.refine_score(cas + t_context_cas, 1.01)
-            t_atn = self.teacher_adapter.refine_score(atn + t_context_atn, 1.01)
+            t_outputs = self.teacher(inputs)
+            t_cas = t_outputs["cas"]
+            t_atn = t_outputs["attn"].transpose(-1, -2)
+            t_nfeat = t_outputs['feat'].transpose(-1, -2)
+            t_pred = F.softmax(t_cas, dim=2)
+
+            t_fog = t_pred[:,:,:self.n_class].transpose(-1, -2)
+            t_bkg = t_pred[:,:,self.n_class:self.n_class+1].transpose(-1, -2)
+
+        s_outputs = self.student(inputs)
+        s_cas = s_outputs["cas"]
+        s_atn = s_outputs["attn"].transpose(-1, -2)
+        s_nfeat = s_outputs['feat'].transpose(-1, -2)
+        s_pred = F.softmax(s_cas, dim=2)
+
+        s_fog = s_pred[:,:,:self.n_class].transpose(-1, -2)
+        s_bkg = s_pred[:,:,self.n_class:self.n_class+1].transpose(-1, -2)
+
+        with torch.no_grad():
+            t_atn = self.refine_score(t_atn, self.refine_alpha) # 1.5
+            t_atn = torch.clamp(t_atn, 0, 1)
         
-        outputs = {'t_cas': t_cas.transpose(-1, -2),
+        outputs = {'t_cas': t_cas,
                    't_atn': t_atn.transpose(-1, -2),
-                   's_cas': s_cas.transpose(-1, -2),
+                   's_cas': s_cas,
                    's_atn': s_atn.transpose(-1, -2),
+                   't_bkg': t_bkg.transpose(-1, -2),
+                   't_fog': t_fog.transpose(-1, -2),
+                   's_bkg': s_bkg.transpose(-1, -2),
+                   's_fog': s_fog.transpose(-1, -2),
                    }
                    
         return outputs
-    
-    def softmax_mse_loss(self, input_logits, target_logits):
-        """Takes softmax on both sides and returns MSE loss
 
-        Note:
-        - Returns the sum over all examples. Divide by the batch size afterwards
-        if you want the mean.
-        - Sends gradients to inputs but not the targets.
-        """
-        assert input_logits.size() == target_logits.size()
-
-        input_softmax = F.softmax(input_logits, dim=2)
-        target_softmax = F.softmax(target_logits, dim=2)
+    def bce_loss(self, input_atn, target_atn):
+        assert input_atn.size() == target_atn.size()
         
-        mse_loss = F.mse_loss(input_softmax, target_softmax, reduction='mean') / input_softmax.size(0)  # 对损失求和并除以批次大小
+        # Flatten the input_atn and target_atn to (b*t, 1)
+        input_atn = torch.clamp(input_atn, 0, 1)
 
-        return mse_loss
-    
+        input_atn = input_atn.view(-1, 1)
+        target_atn = target_atn.view(-1, 1)
+
+        bce_loss = F.binary_cross_entropy(input_atn, target_atn, reduction='mean')
+        
+        return bce_loss
 
     def mse_loss(self, input_atn, target_atn):
         assert input_atn.size() == target_atn.size()
         mse_loss = F.mse_loss(input_atn, target_atn, reduction='mean')
 
         return mse_loss
-        
-    def forward(self, inputs, is_training=True, **args):
-        feat = inputs.transpose(-1, -2)
-        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
-        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
-        x_atn = (f_atn + v_atn) / 2
-        nfeat = torch.cat((vfeat, ffeat), 1)
-        nfeat = self.fusion(nfeat)
-        x_cls = self.classifier(nfeat)
+    
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
 
-        t_context_cas, t_context_atn = self.student_adapter(nfeat)
-        x_cls = x_cls + t_context_cas
-        x_atn = x_atn + t_context_atn
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
 
-        if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.apool(x_cls)
-            x_atn = self.apool(x_atn)
-            f_atn = self.apool(f_atn)
-            v_atn = self.apool(v_atn)
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
 
-        outputs = {'feat': nfeat.transpose(-1, -2),
-                   'cas': x_cls.transpose(-1, -2),
-                   'attn': x_atn.transpose(-1, -2),
-                   'v_atn': v_atn.transpose(-1, -2),
-                   'f_atn': f_atn.transpose(-1, -2),
-                   }
+        instance_logits = torch.mean(topk_val, dim=-2)
 
-        return outputs
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back * F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+    
+    def calibration(self, atn, bkg):
+        '''
+        前后景
+        '''
+
+        cal_loss = (1 - atn -
+                      bkg.detach()).abs().mean()
+        return cal_loss
+
+    def forward(self, inputs, is_training=False, **args):
+        t_outputs = self.student(inputs, is_training=is_training, seq_len=args["seq_len"], opt=args["opt"])
+
+        # t_outputs = self.teacher(inputs, is_training=is_training, seq_len=args["seq_len"], opt=args["opt"])
+
+        '''
+        atn=t_outputs["attn"].detach().cpu()
+        back=(1-F.softmax(t_outputs["cas"], dim=2)[:,:,20:21]).detach().cpu()
+
+        atn = np.array(atn[0,:,0])
+        back = np.array(back[0,:,0])
+
+        plt.plot(range(len(atn)), atn, c="r", label="atn")
+        plt.plot(range(len(back)), back, c="g", label="fog")
+        # plt.plot(range(len(uct)), uct, c="b", label="uct(cas[:20])")
+
+        plt.legend(loc="lower right")
+        plt.savefig("/data0/lixunsong/liuyangcen/CVPR2024/uct/"+str(0)+".jpg")
+        plt.clf()
+        exit()
+        '''
+        return t_outputs
 
     def _multiply(self, x, atn, dim=-1, include_min=False):
         if include_min:
@@ -441,16 +399,58 @@ class DELU_Adapter(torch.nn.Module):
 
     def criterion(self, outputs, labels, **args):
         t_atn, t_cas, s_atn, s_cas = outputs['t_atn'], outputs['t_cas'], outputs['s_atn'], outputs['s_cas']
+        t_fog, t_bkg, s_fog, s_bkg = outputs['t_fog'], outputs['t_bkg'], outputs['s_fog'], outputs['s_bkg']
 
-        atn_loss = self.mse_loss(t_atn, s_atn)
-        cas_loss = self.softmax_mse_loss(t_cas, s_cas)
+        # t_cas_supp = self._multiply(t_cas, t_atn, include_min=False)
+        # s_cas_supp = self._multiply(s_cas, s_atn, include_min=False)
+        
+        att_loss = self.mse_loss(t_atn, s_atn)
 
-        total_loss = (atn_loss+cas_loss) / 2
+        cal_loss = self.calibration(s_atn, s_bkg)
+
+        cas_loss = self.mse_loss(t_cas, s_cas)
+        
+        '''
+        bkg_loss = self.mse_loss(t_bkg, s_bkg)
+        
+
+        s_cas_supp = self._multiply(s_cas, s_atn, include_min=True)
+
+        loss_mil_orig, _ = self.topkloss(s_cas,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(s_cas_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+        '''
+        '''
+        import matplotlib.pyplot as plt
+        if self.b % 30 == 0:
+            atn=s_atn.detach().cpu()
+            back=s_bkg.detach().cpu()
+
+            atn = np.array(atn[0,:,0])
+            back = np.array(back[0,:,0])
+
+            plt.plot(range(len(atn)), atn, c="r", label="atn")
+            plt.plot(range(len(back)), 1-back, c="g", label="fog")
+            # plt.plot(range(len(uct)), uct, c="b", label="uct(cas[:20])")
+
+            plt.legend(loc="lower right")
+            plt.savefig("/data0/lixunsong/liuyangcen/CVPR2024/uct/"+str(self.b)+".jpg")
+            plt.clf()
+        self.b += 1
+        '''
+        # 
+        total_loss = 1.0 * cas_loss + 0.1*cal_loss # 1.0*att_loss # + 1*cal_loss +1*cas_loss # + 1.0*atn_loss  # + loss_mil_supp.mean() + loss_mil_orig.mean()) # + 1*cal_loss # +0.1*atn_loss  # 0.1*atn_loss + 
 
         loss_dict = {
             'total_loss': total_loss,
-            'cas_loss': cas_loss,
-            'atn_loss': atn_loss
+            'att_loss': att_loss
         }
 
         return total_loss, loss_dict
@@ -459,7 +459,7 @@ class DELU(torch.nn.Module):
     def __init__(self, n_feature, n_class, device="cuda:0", **args):
         super().__init__()
         embed_dim = 2048
-        dropout_ratio = args['opt'].dropout_ratio
+        self.dropout_ratio = args['opt'].dropout_ratio
         self.device = device
 
         self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
@@ -468,28 +468,26 @@ class DELU(torch.nn.Module):
         self.feat_encoder = nn.Sequential(
             nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
             nn.LeakyReLU(0.2),
-            nn.Dropout(dropout_ratio)
+            nn.Dropout(self.dropout_ratio)
         )
 
         self.fusion = nn.Sequential(
             nn.Conv1d(n_feature, n_feature, (1,), padding=0),
             nn.LeakyReLU(0.2),
-            nn.Dropout(dropout_ratio)
+            nn.Dropout(self.dropout_ratio)
         )
 
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout_ratio),
+            nn.Dropout(self.dropout_ratio),
             nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
             nn.LeakyReLU(0.2),
-            nn.Dropout(0.7),
+            nn.Dropout(self.dropout_ratio),
             nn.Conv1d(embed_dim, n_class + 1, (1,))
         )
 
         _kernel = 13
         self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
-
-        self.pool = RefineAvgPool(3)
 
         self.apply(weights_init)
 
@@ -502,17 +500,6 @@ class DELU(torch.nn.Module):
         nfeat = self.fusion(nfeat)
         x_cls = self.classifier(nfeat)
 
-        if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.apool(x_cls)
-            x_atn = self.apool(x_atn)
-            f_atn = self.apool(f_atn)
-            v_atn = self.apool(v_atn)
-        '''
-        x_cls = self.pool(x_cls)
-        x_atn = self.pool(x_atn)
-        f_atn = self.pool(f_atn)
-        v_atn = self.pool(v_atn)
-        '''
         outputs = {'feat': nfeat.transpose(-1, -2),
                    'cas': x_cls.transpose(-1, -2),
                    'attn': x_atn.transpose(-1, -2),
@@ -784,7 +771,8 @@ class DELU_ACT(torch.nn.Module):
         self.channel_avg = nn.AdaptiveAvgPool1d(1)
         self.batch_avg = nn.AdaptiveAvgPool1d(1)
         self.ce_criterion = nn.BCELoss()
-        _kernel = ((args['opt'].max_seqlen // args['opt'].t) // 2 * 2 + 1)
+
+        _kernel = 13
         self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
         self.apply(weights_init)
@@ -799,11 +787,11 @@ class DELU_ACT(torch.nn.Module):
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
         x_cls = self.classifier(nfeat)
-        if not is_training: # 只有测试才搞这个
-            x_cls = self.pool(x_cls)
-            x_atn = self.pool(x_atn)
-            f_atn = self.pool(f_atn)
-            v_atn = self.pool(v_atn)
+
+        x_cls = self.pool(x_cls)
+        x_atn = self.pool(x_atn)
+        f_atn = self.pool(f_atn)
+        v_atn = self.pool(v_atn)
         # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
 
         return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
@@ -1086,9 +1074,9 @@ class DELU_MULTI_SCALE(torch.nn.Module):
 
         self.pool = nn.ModuleList()
         for _kernel in self.scales:
-            # self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
             # self.fusions.append(nn.Conv1d(embed_dim, embed_dim, 1))
-            self.pool.append(RefineAvgPool(_kernel))
+            # self.pool.append(RefineAvgPool(_kernel))
         
         self.apool = nn.AvgPool1d(13, 1, padding=13 // 2, count_include_pad=True)
 
@@ -1108,8 +1096,9 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         head_output.append(current.transpose(-1, -2))
 
         for i in range(len(self.scales)-2,-1,-1):
-            current = self.pool[i](x) # 这里后期再考虑各层配合
+            current = self.pool[i](x) + pre*0.3 # 这里后期再考虑各层配合
             head_output.append(current.transpose(-1, -2))
+            pre = current
 
         return list(reversed(head_output)) # 1,2,4,8...
 
@@ -1123,11 +1112,6 @@ class DELU_MULTI_SCALE(torch.nn.Module):
         nfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(nfeat)
         x_cls = self.classifier(nfeat)
-
-        x_cls = self.apool(x_cls)
-        x_atn = self.apool(x_atn)
-        f_atn = self.apool(f_atn)
-        v_atn = self.apool(v_atn)
 
         x_cls = self.pool_forward(x_cls)
         x_atn = self.pool_forward(x_atn)
@@ -1489,14 +1473,6 @@ class DELU_PYRAMID(torch.nn.Module):
 
         x_cls = self.classifier(nfeat)
 
-        '''
-        if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.pool(x_cls)
-            x_atn = self.pool(x_atn)
-            f_atn = self.pool(f_atn)
-            v_atn = self.pool(v_atn)
-        '''
-
         # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
 
         return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
@@ -1752,35 +1728,372 @@ class DELU_PYRAMID(torch.nn.Module):
 
         return element_logits, element_atn
 
-class AcceleratedAttentionPool1d(nn.Module):
-    def __init__(self, hidden_dim, kernel):
-        super(AcceleratedAttentionPool1d, self).__init__()
-        self.kernel = kernel
-        self.attention = CrossAttention(hidden_dim)
+class CO2NET(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        self.dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
 
-    def forward(self, x):
-        batch_size, embed_dim, seq_len = x.size()
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
 
-        # Calculate the padding needed for the input tensor
-        padding = self.kernel // 2
-        x_padded = F.pad(x, (padding, padding), mode='constant', value=0)
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio)
+        )
 
-        # Initialize indices for efficient slicing
-        indices = torch.arange(self.kernel).view(1, 1, -1).expand(batch_size, embed_dim, -1).to(x.device)
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio)
+        )
 
-        # Apply CrossAttention with a step size of 1
-        chunks = x_padded.unfold(2, self.kernel, 1)
-        out_list = []
+        self.classifier = nn.Sequential(
+            nn.Dropout(self.dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
 
-        for chunk in chunks.transpose(1, 2).contiguous().view(-1, embed_dim, self.kernel):
-            out, _ = self.attention(chunk, x_padded, chunk)
-            center_out = out.gather(dim=2, index=indices)
-            out_list.append(center_out.view(batch_size, embed_dim, 1))
+        _kernel = 13
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
 
-        # Stack and reshape the attention-weighted representations
-        output = torch.cat(out_list, dim=2) / self.kernel
+        self.apply(weights_init)
 
-        return output
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        outputs = {'feat': nfeat.transpose(-1, -2),
+                   'cas': x_cls.transpose(-1, -2),
+                   'attn': x_atn.transpose(-1, -2),
+                   'v_atn': v_atn.transpose(-1, -2),
+                   'f_atn': f_atn.transpose(-1, -2),
+                   }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+        mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
+
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+        loss_3_supp_Contrastive = self.Contrastive(feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        total_loss = (
+                    loss_mil_orig.mean() + loss_mil_supp.mean() +
+                    args['opt'].alpha3 * loss_3_supp_Contrastive +
+                    args['opt'].alpha4 * mutual_loss +
+                    args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                    args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3)
+
+        loss_dict = {
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back * F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+    def decompose(self, outputs, **args):
+        feat, element_logits, atn_supp, atn_drop, element_atn = outputs
+
+        return element_logits, element_atn
+
+class CO2NET_ACT(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        self.dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio)
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(self.dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(self.dropout_ratio),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        _kernel = 13
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+
+        self.apply(weights_init)
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.apool(x_cls)
+        x_atn = self.apool(x_atn)
+        f_atn = self.apool(f_atn)
+        v_atn = self.apool(v_atn)
+
+        outputs = {'feat': nfeat.transpose(-1, -2),
+                   'cas': x_cls.transpose(-1, -2),
+                   'attn': x_atn.transpose(-1, -2),
+                   'v_atn': v_atn.transpose(-1, -2),
+                   'f_atn': f_atn.transpose(-1, -2),
+                   }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+        mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
+
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+        loss_3_supp_Contrastive = self.Contrastive(feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        total_loss = (
+                    loss_mil_orig.mean() + loss_mil_supp.mean() +
+                    args['opt'].alpha3 * loss_3_supp_Contrastive +
+                    args['opt'].alpha4 * mutual_loss +
+                    args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                    args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3)
+
+        loss_dict = {
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back * F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+    def decompose(self, outputs, **args):
+        feat, element_logits, atn_supp, atn_drop, element_atn = outputs
+
+        return element_logits, element_atn
 
 class AttentionPool1d(nn.Module):
     def __init__(self, hidden_dim, kernel, dropout_prob=0.0):
@@ -1820,7 +2133,7 @@ class DELU_DDG(torch.nn.Module):
         embed_dim = 2048
         dropout_ratio = args['opt'].dropout_ratio
 
-        self.Attn = getattr(models, args['opt'].AWM)(1024, args)
+        self.Attn = DDG_Net(1024, args)
 
         self.fusion = nn.Sequential(
             nn.Conv1d(n_feature, n_feature, (1,), padding=0),
@@ -1840,28 +2153,15 @@ class DELU_DDG(torch.nn.Module):
         self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
             if _kernel is not None else nn.Identity()
 
-        self.pool = RefineAvgPool(3)
-
         self.apply(weights_init)
 
-    def forward(self, inputs, is_training=True, **args):
+    def forward(self, inputs, is_training=True,**args):
         feat = inputs.transpose(-1, -2)
         v_atn, vfeat, f_atn, ffeat, loss = self.Attn(feat[:, :1024, :], feat[:, 1024:, :], is_training=is_training, **args)
         x_atn = (f_atn + v_atn) / 2
         tfeat = torch.cat((vfeat, ffeat), 1)
         nfeat = self.fusion(tfeat)
         x_cls = self.classifier(nfeat)
-
-        if "ActivityNet" in args["opt"].dataset_name:
-            x_cls = self.apool(x_cls)
-            x_atn = self.apool(x_atn)
-            f_atn = self.apool(f_atn)
-            v_atn = self.apool(v_atn)
-        
-        x_cls = self.pool(x_cls)
-        x_atn = self.pool(x_atn)
-        f_atn = self.pool(f_atn)
-        v_atn = self.pool(v_atn)
 
         outputs = {
             'feat': nfeat.transpose(-1, -2),
@@ -2144,49 +2444,1554 @@ class DELU_DDG(torch.nn.Module):
 
         return element_logits, element_atn
 
-class CrossAttention(nn.Module):
-    def __init__(self, hidden_dim, dropout_prob=0.0, temp=1.0):
-        super(CrossAttention, self).__init__()
+class DELU_DDG_MULTI_SCALE(torch.nn.Module):
+    def __init__(self, n_feature, n_class, **args):
+        super().__init__()
+        embed_dim = 2048
+        dropout_ratio = args['opt'].dropout_ratio
 
-        temp = 1.5 # 0.01 # 2-2快的是0.1 1-1慢的是0.5
+        self.Attn = getattr(models, args['opt'].AWM)(1024, args)
 
-        self.hidden_dim = hidden_dim
-        self.temp = temp
+        self.scales = args['opt'].scales
 
-        self.query = nn.Linear(hidden_dim, hidden_dim)
-        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        self.pool = nn.ModuleList()
+
+        for _kernel in self.scales:
+            self.pool.append(nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True))
+
+        self.apply(weights_init)
+
+    def pool_forward(self, x):
+
+        head_output=[]
+        current = self.pool[-1](x)
+        pre = current
+        head_output.append(current.transpose(-1, -2))
+
+        for i in range(len(self.scales)-2,-1,-1):
+            current = self.pool[i](x) + pre*0.3 # 这里后期再考虑各层配合
+            head_output.append(current.transpose(-1, -2))
+            pre = current
+
+        return list(reversed(head_output)) # 1,2,4,8...
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat, f_atn, ffeat, loss = self.Attn(feat[:, :1024, :], feat[:, 1024:, :], is_training=is_training, **args)
+        x_atn = (f_atn + v_atn) / 2
+        tfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(tfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.pool_forward(x_cls)
+        x_atn = self.pool_forward(x_atn)
+        f_atn = self.pool_forward(f_atn)
+        v_atn = self.pool_forward(v_atn)
+
+        outputs = {
+            'feat': nfeat.transpose(-1, -2),
+            'cas': x_cls,
+            'attn': x_atn,
+            'v_atn': v_atn,
+            'f_atn': f_atn,
+            'extra_loss': loss,
+        }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def complementary_learning_loss(self, cas, labels):
+
+        labels_with_back = torch.cat(
+            (labels, torch.ones_like(labels[:, [0]])), dim=-1).unsqueeze(1)
+        cas = F.softmax(cas, dim=-1)
+        complementary_loss = torch.sum(-(1 - labels_with_back) * torch.log((1 - cas).clamp_(1e-6)), dim=-1)
+        return complementary_loss.mean()
+    
+    def criterion(self, outputs, labels, **args):
+        total_loss = 0.0  # Initialize the total loss
+        avg_loss_dict = {}  # Initialize the dictionary for averaging loss_dict elements
+
+        for scale in range(len(self.scales)):
+            single_scale_total_loss, single_scale_loss_dict = self.single_scale_criterion(scale, outputs, labels, args)
+            
+            # Accumulate the single_scale_total_loss
+            total_loss += single_scale_total_loss
+
+            # Aggregate elements from single_scale_loss_dict for averaging
+            for key, value in single_scale_loss_dict.items():
+                if key in avg_loss_dict:
+                    avg_loss_dict[key] += value
+                else:
+                    avg_loss_dict[key] = value
+
+        # Calculate the average loss
+        num_scales = float(len(self.scales))
+        avg_total_loss = total_loss / num_scales
+
+        # Average the elements in avg_loss_dict
+        for key in avg_loss_dict:
+            avg_loss_dict[key] /= num_scales
+
+        return avg_total_loss, avg_loss_dict
+
+    def single_scale_criterion(self, scale, outputs, labels, args):
+
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'][scale], outputs['attn'][scale]
+        v_atn = outputs['v_atn'][scale]
+        f_atn = outputs['f_atn'][scale]
+
+        try:
+            fc_loss = outputs['extra_loss']['feat_loss']
+        except:
+            fc_loss = 0
+
+        mutual_loss = 0.5 * \
+                      F.mse_loss(v_atn, f_atn.detach()) + 0.5 * \
+                      F.mse_loss(f_atn, v_atn.detach())
+
+        element_logits_supp = self._multiply(
+            element_logits, element_atn, include_min=True)
+
+        cl_loss = self.complementary_learning_loss(element_logits, labels)
+
+        edl_loss = self.edl_loss(element_logits_supp,
+                                 element_atn,
+                                 labels,
+                                 rat=args['opt'].rat_atn,
+                                 n_class=args['opt'].num_class,
+                                 epoch=args['itr'],
+                                 total_epoch=args['opt'].max_iter,
+                                 )
+
+        uct_guide_loss = self.uct_guide_loss(element_logits,
+                                             element_logits_supp,
+                                             element_atn,
+                                             v_atn,
+                                             f_atn,
+                                             n_class=args['opt'].num_class,
+                                             epoch=args['itr'],
+                                             total_epoch=args['opt'].max_iter,
+                                             amplitude=args['opt'].amplitude,
+                                             )
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+        loss_3_supp_Contrastive = self.Contrastive(
+            feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        total_loss = (
+                args['opt'].alpha_edl * edl_loss +
+                args['opt'].alpha_uct_guide * uct_guide_loss +
+                loss_mil_orig.mean() + loss_mil_supp.mean() +
+                args['opt'].alpha3 * loss_3_supp_Contrastive +
+                args['opt'].alpha4 * mutual_loss +
+                args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3
+                + args['opt'].alpha5 * fc_loss
+                + args['opt'].alpha6 * cl_loss
+        )
+
+        loss_dict = {
+            'edl_loss': args['opt'].alpha_edl * edl_loss,
+            'uct_guide_loss': args['opt'].alpha_uct_guide * uct_guide_loss,
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'feat_loss': args['opt'].alpha5 * fc_loss,
+            'complementary_loss': args['opt'].alpha6 * cl_loss,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def uct_guide_loss(self,
+                       element_logits,
+                       element_logits_supp,
+                       element_atn,
+                       v_atn,
+                       f_atn,
+                       n_class,
+                       epoch,
+                       total_epoch,
+                       amplitude):
+
+        evidence = exp_evidence(element_logits_supp)
+        alpha = evidence + 1
+        S = torch.sum(alpha, dim=-1)
+        snippet_uct = n_class / S
+
+        total_snippet_num = element_logits.shape[1]
+        curve = self.course_function(
+            epoch, total_epoch, total_snippet_num, amplitude)
+
+        loss_guide = (1 - element_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        v_loss_guide = (1 - v_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        f_loss_guide = (1 - f_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        total_loss_guide = (loss_guide + v_loss_guide + f_loss_guide) / 3
+
+        _, uct_indices = torch.sort(snippet_uct, dim=1)
+        sorted_curve = torch.gather(curve.repeat(10, 1), 1, uct_indices)
+
+        uct_guide_loss = torch.mul(sorted_curve, total_loss_guide).mean()
+
+        return uct_guide_loss
+
+    def edl_loss(self,
+                 element_logits_supp,
+                 element_atn,
+                 labels,
+                 rat,
+                 n_class,
+                 epoch=0,
+                 total_epoch=5000,
+                 ):
+
+        k = max(1, int(element_logits_supp.shape[-2] // rat))
+
+        atn_values, atn_idx = torch.topk(
+            element_atn,
+            k=k,
+            dim=1
+        )
+        atn_idx_expand = atn_idx.expand([-1, -1, n_class + 1])
+        topk_element_logits = torch.gather(
+            element_logits_supp, 1, atn_idx_expand)[:, :, :-1]
+        video_logits = topk_element_logits.mean(dim=1)
+
+        edl_loss = EvidenceLoss(
+            num_classes=n_class,
+            evidence='exp',
+            loss_type='log',
+            with_kldiv=False,
+            with_avuloss=False,
+            disentangle=False,
+            annealing_method='exp')
+
+        edl_results = edl_loss(
+            output=video_logits,
+            target=labels,
+            epoch=epoch,
+            total_epoch=total_epoch
+        )
+
+        edl_loss = edl_results['loss_cls'].mean()
+
+        return edl_loss
+
+    def course_function(self, epoch, total_epoch, total_snippet_num, amplitude):
+
+        idx = torch.arange(total_snippet_num)
+        theta = 2 * (idx + 0.5) / total_snippet_num - 1
+        delta = - 2 * epoch / total_epoch + 1
+        curve = amplitude * torch.tanh(theta * delta) + 1
+
+        return curve
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back *
+                     F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            # (n_feature, n_class)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / \
+                 (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / \
+                 (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+class DELU_IRM(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        mid_dim = 1024
+        self.device = device
+        dropout_ratio = args['opt'].dropout_ratio
+        reduce_ratio = args['opt'].reduce_ratio
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, 3, padding=1), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
+            nn.Dropout(0.7), nn.Conv1d(embed_dim, n_class + 1, 1))
+        # self.cadl = CADL()
+        # self.attention = Non_Local_Block(embed_dim,mid_dim,dropout_ratio)
+
+        self.channel_avg = nn.AdaptiveAvgPool1d(1)
+        self.batch_avg = nn.AdaptiveAvgPool1d(1)
+        self.ce_criterion = nn.BCELoss()
+        _kernel = ((args['opt'].max_seqlen // args['opt'].t) // 2 * 2 + 1)
+        _kernel = 13
+        self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+        self.apply(weights_init)
+
+        mse = torch.nn.MSELoss(reduction="none")
+        dummy_w = torch.nn.Parameter(torch.Tensor([1.0]))
+        phi = torch.nn.Parameter(torch.ones())
+
+    def compute_penalty(losses, dummy_w):
+        g1 = grad(losses[0::2].mean(), dummy_w, create_graph=True)[0]
+        g2 = grad(losses[0::2].mean(), dummy_w, create_graph=True)[0]
+
+        return (g1*g2).sum()
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        b, c, n = feat.size()
+        # feat = self.feat_encoder(x)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.pool(x_cls)
+        x_atn = self.pool(x_atn)
+        f_atn = self.pool(f_atn)
+        v_atn = self.pool(v_atn)
+        # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
+
+        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
+                'v_atn': v_atn.transpose(-1, -2), 'f_atn': f_atn.transpose(-1, -2)}
+        # ,fg_mask.transpose(-1, -2), bg_mask.transpose(-1, -2),dropped_fg_mask.transpose(-1, -2)
+        # return att_sigmoid,att_logit, feat_emb, bag_logit, instance_logit
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+        mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
+        # learning weight dynamic, lambda1 (1-lambda1)
+        b, n, c = element_logits.shape
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k,
+                                         reduce=None)
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k,
+                                         reduce=None)
+
+        edl_loss = self.edl_loss(element_logits_supp,
+                                 element_atn,
+                                 labels,
+                                 rat=args['opt'].rat_atn,
+                                 n_class=args['opt'].num_class,
+                                 epoch=args['itr'],
+                                 total_epoch=args['opt'].max_iter,
+                                 )
+
+        uct_guide_loss = self.uct_guide_loss(element_logits,
+                                             element_logits_supp,
+                                             element_atn,
+                                             v_atn,
+                                             f_atn,
+                                             n_class=args['opt'].num_class,
+                                             epoch=args['itr'],
+                                             total_epoch=args['opt'].max_iter,
+                                             amplitude=args['opt'].amplitude,
+                                             )
+
+        loss_3_supp_Contrastive = self.Contrastive(feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        # total loss
+        total_loss = (
+                    args['opt'].alpha_edl * edl_loss +
+                    args['opt'].alpha_uct_guide * uct_guide_loss +
+                    loss_mil_orig.mean() + loss_mil_supp.mean() +
+                    args['opt'].alpha3 * loss_3_supp_Contrastive +
+                    args['opt'].alpha4 * mutual_loss +
+                    args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                    args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3)
+
+        loss_dict = {
+            'edl_loss': args['opt'].alpha_edl * edl_loss,
+            'uct_guide_loss': args['opt'].alpha_uct_guide * uct_guide_loss,
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def uct_guide_loss(self,
+                       element_logits,
+                       element_logits_supp,
+                       element_atn,
+                       v_atn,
+                       f_atn,
+                       n_class,
+                       epoch,
+                       total_epoch,
+                       amplitude):
+
+        evidence = exp_evidence(element_logits_supp)
+        alpha = evidence + 1
+        S = torch.sum(alpha, dim=-1)
+        snippet_uct = n_class / S
+
+        total_snippet_num = element_logits.shape[1]
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
+
+        loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        v_loss_guide = (1 - v_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        f_loss_guide = (1 - f_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        total_loss_guide = (loss_guide + v_loss_guide + f_loss_guide) / 3
+
+        _, uct_indices = torch.sort(snippet_uct, dim=1)
+        sorted_curve = torch.gather(curve.repeat(10, 1), 1, uct_indices)
+
+        uct_guide_loss = torch.mul(sorted_curve, total_loss_guide).mean()
+
+        return uct_guide_loss
+
+    def edl_loss(self,
+                 element_logits_supp,
+                 element_atn,
+                 labels,
+                 rat,
+                 n_class,
+                 epoch=0,
+                 total_epoch=5000,
+                 ):
+
+        k = max(1, int(element_logits_supp.shape[-2] // rat))
+
+        atn_values, atn_idx = torch.topk(
+            element_atn,
+            k=k,
+            dim=1
+        )
+
+        atn_idx_expand = atn_idx.expand([-1, -1, n_class + 1])
+        topk_element_logits = torch.gather(element_logits_supp, 1, atn_idx_expand)[:, :, :-1]
+
+        video_logits = topk_element_logits.mean(dim=1)
+
+        edl_loss = EvidenceLoss(
+            num_classes=n_class,
+            evidence='relu',
+            loss_type='mse',
+            with_kldiv=False,
+            with_avuloss=False,
+            disentangle=False,
+            annealing_method='exp')
+
+        edl_results = edl_loss(
+            output=video_logits,
+            target=labels,
+            epoch=epoch,
+            total_epoch=total_epoch
+        )
+
+        edl_loss = edl_results['loss_cls'].mean()
+
+        return edl_loss
+
+    def course_function(self, epoch, total_epoch, total_snippet_num, amplitude):
+
+        idx = torch.arange(total_snippet_num)
+
+        # From -1 to 1
+        theta = 2 * (idx + 0.5) / total_snippet_num - 1
+
+        # From 1 to -1
+        delta = - 2 * epoch / total_epoch + 1
+
+        curve = amplitude * torch.tanh(theta * delta) + 1
+
+        return curve
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 lab_rand=None,
+                 rat=8,
+                 reduce=None):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        if lab_rand is not None:
+            labels_with_back = torch.cat((labels, lab_rand), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+        instance_logits = torch.mean(
+            topk_val,
+            dim=-2,
+        )
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+        milloss = (-(labels_with_back *
+                     F.log_softmax(instance_logits, dim=-1)).sum(dim=-1))
+        if reduce is not None:
+            milloss = milloss.mean()
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+    def decompose(self, outputs, **args):
+        feat, element_logits, atn_supp, atn_drop, element_atn = outputs
+
+        return element_logits, element_atn
+
+class DELU_SNIP(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        mid_dim = 1024
+        self.device = device
+        dropout_ratio = args['opt'].dropout_ratio
+        reduce_ratio = args['opt'].reduce_ratio
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, 3, padding=1), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, 1, padding=0), nn.LeakyReLU(0.2), nn.Dropout(dropout_ratio))
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, 3, padding=1), nn.LeakyReLU(0.2),
+            nn.Dropout(0.7), nn.Conv1d(embed_dim, n_class + 1, 1))
+        # self.cadl = CADL()
+        # self.attention = Non_Local_Block(embed_dim,mid_dim,dropout_ratio)
+
+        self.channel_avg = nn.AdaptiveAvgPool1d(1)
+        self.batch_avg = nn.AdaptiveAvgPool1d(1)
+        self.ce_criterion = nn.BCELoss()
+        _kernel = ((args['opt'].max_seqlen // args['opt'].t) // 2 * 2 + 1)
+        _kernel = 13
+        self.pool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+        self.apply(weights_init)
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        b, c, n = feat.size()
+        # feat = self.feat_encoder(x)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.pool(x_cls)
+        x_atn = self.pool(x_atn)
+        f_atn = self.pool(f_atn)
+        v_atn = self.pool(v_atn)
+        # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
+
+        return {'feat': nfeat.transpose(-1, -2), 'cas': x_cls.transpose(-1, -2), 'attn': x_atn.transpose(-1, -2),
+                'v_atn': v_atn.transpose(-1, -2), 'f_atn': f_atn.transpose(-1, -2)}
+        # ,fg_mask.transpose(-1, -2), bg_mask.transpose(-1, -2),dropped_fg_mask.transpose(-1, -2)
+        # return att_sigmoid,att_logit, feat_emb, bag_logit, instance_logit
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+        mutual_loss = 0.5 * F.mse_loss(v_atn, f_atn.detach()) + 0.5 * F.mse_loss(f_atn, v_atn.detach())
+        # learning weight dynamic, lambda1 (1-lambda1)
+        b, n, c = element_logits.shape
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k,
+                                         reduce=None)
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k,
+                                         reduce=None)
+
+        edl_loss = self.edl_loss(element_logits_supp,
+                                 element_atn,
+                                 labels,
+                                 rat=args['opt'].rat_atn,
+                                 n_class=args['opt'].num_class,
+                                 epoch=args['itr'],
+                                 total_epoch=args['opt'].max_iter,
+                                 )
+
+        uct_guide_loss = self.uct_guide_loss(element_logits,
+                                             element_logits_supp,
+                                             element_atn,
+                                             v_atn,
+                                             f_atn,
+                                             n_class=args['opt'].num_class,
+                                             epoch=args['itr'],
+                                             total_epoch=args['opt'].max_iter,
+                                             amplitude=args['opt'].amplitude,
+                                             )
+
+        loss_3_supp_Contrastive = self.Contrastive(feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        # total loss
+        total_loss = (
+                    args['opt'].alpha_edl * edl_loss +
+                    args['opt'].alpha_uct_guide * uct_guide_loss +
+                    loss_mil_orig.mean() + loss_mil_supp.mean() +
+                    args['opt'].alpha3 * loss_3_supp_Contrastive +
+                    args['opt'].alpha4 * mutual_loss +
+                    args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                    args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3)
+
+        loss_dict = {
+            'edl_loss': args['opt'].alpha_edl * edl_loss,
+            'uct_guide_loss': args['opt'].alpha_uct_guide * uct_guide_loss,
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def uct_guide_loss(self,
+                       element_logits,
+                       element_logits_supp,
+                       element_atn,
+                       v_atn,
+                       f_atn,
+                       n_class,
+                       epoch,
+                       total_epoch,
+                       amplitude):
+
+        evidence = exp_evidence(element_logits_supp)
+        alpha = evidence + 1
+        S = torch.sum(alpha, dim=-1)
+        snippet_uct = n_class / S
+
+        total_snippet_num = element_logits.shape[1]
+        curve = self.course_function(epoch, total_epoch, total_snippet_num, amplitude).to(self.device)
+
+        loss_guide = (1 - element_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        v_loss_guide = (1 - v_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        f_loss_guide = (1 - f_atn - element_logits.softmax(-1)[..., [-1]]).abs().squeeze()
+
+        total_loss_guide = (loss_guide + v_loss_guide + f_loss_guide) / 3
+
+        _, uct_indices = torch.sort(snippet_uct, dim=1)
+        sorted_curve = torch.gather(curve.repeat(10, 1), 1, uct_indices)
+
+        uct_guide_loss = torch.mul(sorted_curve, total_loss_guide).mean()
+
+        return uct_guide_loss
+
+    def edl_loss(self,
+                 element_logits_supp,
+                 element_atn,
+                 labels,
+                 rat,
+                 n_class,
+                 epoch=0,
+                 total_epoch=5000,
+                 ):
+
+        k = max(1, int(element_logits_supp.shape[-2] // rat))
+
+        atn_values, atn_idx = torch.topk(
+            element_atn,
+            k=k,
+            dim=1
+        )
+
+        atn_idx_expand = atn_idx.expand([-1, -1, n_class + 1])
+        topk_element_logits = torch.gather(element_logits_supp, 1, atn_idx_expand)[:, :, :-1]
+
+        video_logits = topk_element_logits.mean(dim=1)
+
+        edl_loss = EvidenceLoss(
+            num_classes=n_class,
+            evidence='relu',
+            loss_type='mse',
+            with_kldiv=False,
+            with_avuloss=False,
+            disentangle=False,
+            annealing_method='exp')
+
+        edl_results = edl_loss(
+            output=video_logits,
+            target=labels,
+            epoch=epoch,
+            total_epoch=total_epoch
+        )
+
+        edl_loss = edl_results['loss_cls'].mean()
+
+        return edl_loss
+
+    def course_function(self, epoch, total_epoch, total_snippet_num, amplitude):
+
+        idx = torch.arange(total_snippet_num)
+
+        # From -1 to 1
+        theta = 2 * (idx + 0.5) / total_snippet_num - 1
+
+        # From 1 to -1
+        delta = - 2 * epoch / total_epoch + 1
+
+        curve = amplitude * torch.tanh(theta * delta) + 1
+
+        return curve
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 lab_rand=None,
+                 rat=8,
+                 reduce=None):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        if lab_rand is not None:
+            labels_with_back = torch.cat((labels, lab_rand), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+        instance_logits = torch.mean(
+            topk_val,
+            dim=-2,
+        )
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+        milloss = (-(labels_with_back *
+                     F.log_softmax(instance_logits, dim=-1)).sum(dim=-1))
+        if reduce is not None:
+            milloss = milloss.mean()
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).to(self.device)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)  # (n_feature, n_class)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).to(self.device)) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+    def decompose(self, outputs, **args):
+        feat, element_logits, atn_supp, atn_drop, element_atn = outputs
+
+        return element_logits, element_atn
+
+class DELU_DDG_ACT(torch.nn.Module):
+    def __init__(self, n_feature, n_class, **args):
+        super().__init__()
+        embed_dim = 2048
+        dropout_ratio = args['opt'].dropout_ratio
+
+        self.Attn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        self.refine_pool = RefineAvgPool(9)
+
+        _kernel = 13
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+
+        self.apply(weights_init)
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat, f_atn, ffeat, loss = self.Attn(feat[:, :1024, :], feat[:, 1024:, :], is_training=is_training, **args)
+        x_atn = (f_atn + v_atn) / 2
+        tfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(tfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.apool(x_cls)
+        x_atn = self.apool(x_atn)
+        f_atn = self.apool(f_atn)
+        v_atn = self.apool(v_atn)
         
-        self.value = nn.Linear(hidden_dim, hidden_dim)
-        self.fc_out = nn.Linear(hidden_dim, hidden_dim)
 
-        self.register_buffer("scale", torch.sqrt(torch.FloatTensor([hidden_dim])))
+        # x_atn = self.refine_pool(x_atn, 0.0)
 
-        # Add dropout layer with the specified dropout probability
-        self.dropout = nn.Dropout(p=dropout_prob)
+        outputs = {
+            'feat': nfeat.transpose(-1, -2),
+            'cas': x_cls.transpose(-1, -2),
+            'attn': x_atn.transpose(-1, -2),
+            'v_atn': v_atn.transpose(-1, -2),
+            'f_atn': f_atn.transpose(-1, -2),
+            'extra_loss': loss,
+        }
 
-    def forward(self, input_q, input_k, input_v):
-        Q = self.query(input_q)
-        K = self.query(input_k)
-        V = input_v
+        return outputs
 
-        energy = torch.matmul(Q, K.permute(0, 2, 1)) / self.scale
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
 
-        attention = torch.softmax(energy/self.temp, dim=-1)
+    def complementary_learning_loss(self, cas, labels):
 
-        # print(attention)
+        labels_with_back = torch.cat(
+            (labels, torch.ones_like(labels[:, [0]])), dim=-1).unsqueeze(1)
+        cas = F.softmax(cas, dim=-1)
+        complementary_loss = torch.sum(-(1 - labels_with_back) * torch.log((1 - cas).clamp_(1e-6)), dim=-1)
+        return complementary_loss.mean()
 
-        # print(attention[0,0,6], torch.max(attention[0]))
+    def criterion(self, outputs, labels, **args):
 
-        # Apply dropout to the attention scores
-        # attention = self.dropout(attention)
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
 
-        out = torch.matmul(attention, V)
-        out = out.contiguous()
+        try:
+            fc_loss = outputs['extra_loss']['feat_loss']
+        except:
+            fc_loss = 0
 
-        out = self.fc_out(out)
+        mutual_loss = 0.5 * \
+                      F.mse_loss(v_atn, f_atn.detach()) + 0.5 * \
+                      F.mse_loss(f_atn, v_atn.detach())
 
-        return out, attention
-   
+        element_logits_supp = self._multiply(
+            element_logits, element_atn, include_min=True)
+
+        cl_loss = self.complementary_learning_loss(element_logits, labels)
+
+        edl_loss = self.edl_loss(element_logits_supp,
+                                 element_atn,
+                                 labels,
+                                 rat=args['opt'].rat_atn,
+                                 n_class=args['opt'].num_class,
+                                 epoch=args['itr'],
+                                 total_epoch=args['opt'].max_iter,
+                                 )
+
+        uct_guide_loss = self.uct_guide_loss(element_logits,
+                                             element_logits_supp,
+                                             element_atn,
+                                             v_atn,
+                                             f_atn,
+                                             n_class=args['opt'].num_class,
+                                             epoch=args['itr'],
+                                             total_epoch=args['opt'].max_iter,
+                                             amplitude=args['opt'].amplitude,
+                                             )
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+        loss_3_supp_Contrastive = self.Contrastive(
+            feat, element_logits_supp, labels, is_back=False)
+
+        loss_norm = element_atn.mean()
+        # guide loss
+        loss_guide = (1 - element_atn -
+                      element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        v_loss_norm = v_atn.mean()
+        # guide loss
+        v_loss_guide = (1 - v_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        f_loss_norm = f_atn.mean()
+        # guide loss
+        f_loss_guide = (1 - f_atn -
+                        element_logits.softmax(-1)[..., [-1]]).abs().mean()
+
+        total_loss = (
+                args['opt'].alpha_edl * edl_loss +
+                args['opt'].alpha_uct_guide * uct_guide_loss +
+                loss_mil_orig.mean() + loss_mil_supp.mean() +
+                args['opt'].alpha3 * loss_3_supp_Contrastive +
+                args['opt'].alpha4 * mutual_loss +
+                args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3 +
+                args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3
+                + args['opt'].alpha5 * fc_loss
+                + args['opt'].alpha6 * cl_loss
+        )
+
+        loss_dict = {
+            'edl_loss': args['opt'].alpha_edl * edl_loss,
+            'uct_guide_loss': args['opt'].alpha_uct_guide * uct_guide_loss,
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'loss_supp_contrastive': args['opt'].alpha3 * loss_3_supp_Contrastive,
+            'mutual_loss': args['opt'].alpha4 * mutual_loss,
+            'norm_loss': args['opt'].alpha1 * (loss_norm + v_loss_norm + f_loss_norm) / 3,
+            'guide_loss': args['opt'].alpha2 * (loss_guide + v_loss_guide + f_loss_guide) / 3,
+            'feat_loss': args['opt'].alpha5 * fc_loss,
+            'complementary_loss': args['opt'].alpha6 * cl_loss,
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def uct_guide_loss(self,
+                       element_logits,
+                       element_logits_supp,
+                       element_atn,
+                       v_atn,
+                       f_atn,
+                       n_class,
+                       epoch,
+                       total_epoch,
+                       amplitude):
+
+        evidence = exp_evidence(element_logits_supp)
+        alpha = evidence + 1
+        S = torch.sum(alpha, dim=-1)
+        snippet_uct = n_class / S
+
+        total_snippet_num = element_logits.shape[1]
+        curve = self.course_function(
+            epoch, total_epoch, total_snippet_num, amplitude)
+
+        loss_guide = (1 - element_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        v_loss_guide = (1 - v_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        f_loss_guide = (1 - f_atn - element_logits.softmax(-1)
+        [..., [-1]]).abs().squeeze()
+
+        total_loss_guide = (loss_guide + v_loss_guide + f_loss_guide) / 3
+
+        _, uct_indices = torch.sort(snippet_uct, dim=1)
+        sorted_curve = torch.gather(curve.repeat(10, 1), 1, uct_indices)
+
+        uct_guide_loss = torch.mul(sorted_curve, total_loss_guide).mean()
+
+        return uct_guide_loss
+
+    def edl_loss(self,
+                 element_logits_supp,
+                 element_atn,
+                 labels,
+                 rat,
+                 n_class,
+                 epoch=0,
+                 total_epoch=5000,
+                 ):
+
+        k = max(1, int(element_logits_supp.shape[-2] // rat))
+
+        atn_values, atn_idx = torch.topk(
+            element_atn,
+            k=k,
+            dim=1
+        )
+        atn_idx_expand = atn_idx.expand([-1, -1, n_class + 1])
+        topk_element_logits = torch.gather(
+            element_logits_supp, 1, atn_idx_expand)[:, :, :-1]
+        video_logits = topk_element_logits.mean(dim=1)
+
+        edl_loss = EvidenceLoss(
+            num_classes=n_class,
+            evidence='exp',
+            loss_type='log',
+            with_kldiv=False,
+            with_avuloss=False,
+            disentangle=False,
+            annealing_method='exp')
+
+        edl_results = edl_loss(
+            output=video_logits,
+            target=labels,
+            epoch=epoch,
+            total_epoch=total_epoch
+        )
+
+        edl_loss = edl_results['loss_cls'].mean()
+
+        return edl_loss
+
+    def course_function(self, epoch, total_epoch, total_snippet_num, amplitude):
+
+        idx = torch.arange(total_snippet_num)
+        theta = 2 * (idx + 0.5) / total_snippet_num - 1
+        delta = - 2 * epoch / total_epoch + 1
+        curve = amplitude * torch.tanh(theta * delta) + 1
+
+        return curve
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back *
+                     F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
+    def Contrastive(self, x, element_logits, labels, is_back=False):
+        if is_back:
+            labels = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+        sim_loss = 0.
+        n_tmp = 0.
+        _, n, c = element_logits.shape
+        for i in range(0, 3 * 2, 2):
+            atn1 = F.softmax(element_logits[i], dim=0)
+            atn2 = F.softmax(element_logits[i + 1], dim=0)
+
+            n1 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            n2 = torch.FloatTensor([np.maximum(n - 1, 1)]).cuda()
+            # (n_feature, n_class)
+            Hf1 = torch.mm(torch.transpose(x[i], 1, 0), atn1)
+            Hf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), atn2)
+            Lf1 = torch.mm(torch.transpose(x[i], 1, 0), (1 - atn1) / n1)
+            Lf2 = torch.mm(torch.transpose(x[i + 1], 1, 0), (1 - atn2) / n2)
+
+            d1 = 1 - torch.sum(Hf1 * Hf2, dim=0) / (
+                    torch.norm(Hf1, 2, dim=0) * torch.norm(Hf2, 2, dim=0))  # 1-similarity
+            d2 = 1 - torch.sum(Hf1 * Lf2, dim=0) / \
+                 (torch.norm(Hf1, 2, dim=0) * torch.norm(Lf2, 2, dim=0))
+            d3 = 1 - torch.sum(Hf2 * Lf1, dim=0) / \
+                 (torch.norm(Hf2, 2, dim=0) * torch.norm(Lf1, 2, dim=0))
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d2 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+            sim_loss = sim_loss + 0.5 * torch.sum(
+                torch.max(d1 - d3 + 0.5, torch.FloatTensor([0.]).cuda()) * labels[i, :] * labels[i + 1, :])
+            n_tmp = n_tmp + torch.sum(labels[i, :] * labels[i + 1, :])
+        sim_loss = sim_loss / n_tmp
+        return sim_loss
+
+    def decompose(self, outputs, **args):
+        feat, element_logits, atn_supp, atn_drop, element_atn = outputs
+
+        return element_logits, element_atn
+
+class BASE(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        _kernel = 13
+        # self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+         #   if _kernel is not None else nn.Identity()
+
+        self.apply(weights_init)
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        outputs = {'feat': nfeat.transpose(-1, -2),
+                   'cas': x_cls.transpose(-1, -2),
+                   'attn': x_atn.transpose(-1, -2),
+                   'v_atn': v_atn.transpose(-1, -2),
+                   'f_atn': f_atn.transpose(-1, -2),
+                   }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+        loss_norm = element_atn.mean()
+
+        total_loss = (loss_mil_orig.mean() + loss_mil_supp.mean())
+
+        loss_dict = {
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back * F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
+class BASE_ACT(torch.nn.Module):
+    def __init__(self, n_feature, n_class, device="cuda:0", **args):
+        super().__init__()
+        embed_dim = 2048
+        dropout_ratio = args['opt'].dropout_ratio
+        self.device = device
+
+        self.vAttn = getattr(models, args['opt'].AWM)(1024, args)
+        self.fAttn = getattr(models, args['opt'].AWM)(1024, args)
+
+        self.feat_encoder = nn.Sequential(
+            nn.Conv1d(n_feature, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Conv1d(n_feature, n_feature, (1,), padding=0),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout_ratio)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_ratio),
+            nn.Conv1d(embed_dim, embed_dim, (3,), padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.7),
+            nn.Conv1d(embed_dim, n_class + 1, (1,))
+        )
+
+        _kernel = 13
+        self.apool = nn.AvgPool1d(_kernel, 1, padding=_kernel // 2, count_include_pad=True) \
+            if _kernel is not None else nn.Identity()
+
+        self.refine_pool = RefineAvgPool(7)
+
+        self.apply(weights_init)
+
+    def forward(self, inputs, is_training=True, **args):
+        feat = inputs.transpose(-1, -2)
+        v_atn, vfeat = self.vAttn(feat[:, :1024, :], feat[:, 1024:, :])
+        f_atn, ffeat = self.fAttn(feat[:, 1024:, :], feat[:, :1024, :])
+        x_atn = (f_atn + v_atn) / 2
+        nfeat = torch.cat((vfeat, ffeat), 1)
+        nfeat = self.fusion(nfeat)
+        x_cls = self.classifier(nfeat)
+
+        x_cls = self.apool(x_cls)
+        x_atn = self.apool(x_atn)
+        f_atn = self.apool(f_atn)
+        v_atn = self.apool(v_atn)
+
+        outputs = {'feat': nfeat.transpose(-1, -2),
+                   'cas': x_cls.transpose(-1, -2),
+                   'attn': x_atn.transpose(-1, -2),
+                   'v_atn': v_atn.transpose(-1, -2),
+                   'f_atn': f_atn.transpose(-1, -2),
+                   }
+
+        return outputs
+
+    def _multiply(self, x, atn, dim=-1, include_min=False):
+        if include_min:
+            _min = x.min(dim=dim, keepdim=True)[0]
+        else:
+            _min = 0
+        return atn * (x - _min) + _min
+
+    def criterion(self, outputs, labels, **args):
+        feat, element_logits, element_atn = outputs['feat'], outputs['cas'], outputs['attn']
+        v_atn = outputs['v_atn']
+        f_atn = outputs['f_atn']
+
+        element_logits_supp = self._multiply(element_logits, element_atn, include_min=True)
+
+        loss_mil_orig, _ = self.topkloss(element_logits,
+                                         labels,
+                                         is_back=True,
+                                         rat=args['opt'].k)
+
+        # SAL
+        loss_mil_supp, _ = self.topkloss(element_logits_supp,
+                                         labels,
+                                         is_back=False,
+                                         rat=args['opt'].k)
+
+
+        total_loss = (loss_mil_orig.mean() + loss_mil_supp.mean())
+
+        loss_dict = {
+            'loss_mil_orig': loss_mil_orig.mean(),
+            'loss_mil_supp': loss_mil_supp.mean(),
+            'total_loss': total_loss,
+        }
+
+        return total_loss, loss_dict
+
+    def topkloss(self,
+                 element_logits,
+                 labels,
+                 is_back=True,
+                 rat=8):
+
+        if is_back:
+            labels_with_back = torch.cat(
+                (labels, torch.ones_like(labels[:, [0]])), dim=-1)
+        else:
+            labels_with_back = torch.cat(
+                (labels, torch.zeros_like(labels[:, [0]])), dim=-1)
+
+        topk_val, topk_ind = torch.topk(
+            element_logits,
+            k=max(1, int(element_logits.shape[-2] // rat)),
+            dim=-2)
+
+        instance_logits = torch.mean(topk_val, dim=-2)
+
+        labels_with_back = labels_with_back / (
+                torch.sum(labels_with_back, dim=1, keepdim=True) + 1e-4)
+
+        milloss = - (labels_with_back * F.log_softmax(instance_logits, dim=-1)).sum(dim=-1)
+
+        return milloss, topk_ind
+
 class RefineAvgPool(nn.Module):
         def __init__(self, scale=1):
             super(RefineAvgPool, self).__init__()
@@ -2194,7 +3999,7 @@ class RefineAvgPool(nn.Module):
             self.padding = nn.ZeroPad2d((self.scale//2, self.scale//2, 0, 0))
             self.pool = nn.MaxPool1d(self.scale // 2, stride=1)
 
-        def forward(self, x, alpha=1.0):
+        def forward(self, x, alpha=1.0, return_mask=False):
 
             if self.scale == 1:
                 return x
@@ -2203,10 +4008,13 @@ class RefineAvgPool(nn.Module):
             y = x
 
             x = self.pool(self.padding(x)) # maxpool
-            replace = torch.min(x[:,:,:x.size(-1)-self.scale//2-1],x[:,:,self.scale//2+1:]) # 左右取min
-
+            replace = torch.min(x[:,:,:x.size(-1)-self.scale//2-1],x[:,:,self.scale//2+1:]) # 左右取min  
             mask = y < replace
 
             y[mask] = alpha * y[mask] + (1-alpha) * replace[mask] # y[mask] + (replace[mask] - y[mask]) * (-0.3)
 
-            return y
+            if return_mask:
+                return y, mask
+            else:
+                return y
+

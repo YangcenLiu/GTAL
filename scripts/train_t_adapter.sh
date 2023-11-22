@@ -5,17 +5,20 @@ python main_adapter.py \
 --alpha_uct_guide 0.4 \
 --amplitude 0.7 \
 --alpha2 0.4 \
---eval_interval 10 \
+--eval_interval 1 \
 --max_seqlen 320 \
---lr 0.00005 \
+--lr 0.00003 \
 --k 7 \
+--batch_size 30 \
 --dataset_name Thumos14reduced \
 --path_dataset /data0/lixunsong/Datasets/THUMOS14 \
 --num_class 20 \
 --use_model DELU_Adapter \
---max_iter 5000 \
+--max_iter 100 \
 --dataset SampleDataset \
---weight_decay 0.001 \
+--weight_decay 0.0005 \
 --pretrained_ckpt ckpt/best_delu_thumos.pkl \
 --AWM BWA_fusion_dropout_feat_v2 \
---work_dir work_dir/adapter
+--refine_scale 45 \
+--refine_alpha 0.1 \
+--work_dir work_dir/t2a_adapter

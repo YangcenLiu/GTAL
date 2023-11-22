@@ -82,8 +82,13 @@ class SampleDataset:
                         idx.append(i)
                         break
             self.classwiseidx.append(idx)
+    
+    def irm_init(self, env=0.01):
+        self.noise = []
+        for i in range(len(self.features)):
+            self.noise.append((np.random.rand(self.features[i].shape[0],self.features[i].shape[1])*2-1)*env)
 
-    def load_data(self, n_similar=0, is_training=True, similar_size=2, return_label_names=False):
+    def load_data(self, n_similar=0, is_training=True, similar_size=2, return_label_names=False, return_env=False):
         if is_training:
             labels = []
             idx = []
@@ -115,6 +120,8 @@ class SampleDataset:
             for r in rand_sampleid:
                 idx.append(self.trainidx[r])
             feat = []
+            if return_env:
+                feat2 = []
             for i in idx:
                 ifeat = self.features[i]
                 if self.sampling == 'random':
@@ -125,16 +132,24 @@ class SampleDataset:
                     sample_idx = np.arange(ifeat.shape[0])
                 else:
                     raise AssertionError('Not supported sampling !')
+                if return_env:
+                    ifeat2 = ifeat+self.noise[i]
+                    ifeat2 = ifeat2[sample_idx]
+                    feat2.append(ifeat2)
                 ifeat = ifeat[sample_idx]
                 feat.append(ifeat)
             feat = np.array(feat)
+            if return_env:
+                feat2=np.array(feat2)
             labels = np.array([self.labels_multihot[i] for i in idx])
             if self.mode == "rgb":
                 feat = feat[..., : self.feature_size]
             elif self.mode == "flow":
                 feat = feat[..., self.feature_size:]
-            return feat, labels, rand_sampleid
-            # return feat, labels, rand_sampleid, idx
+            if return_env:
+                return feat, labels, rand_sampleid, feat2
+            else:
+                return feat, labels, rand_sampleid
 
         else:
             labs = self.labels_multihot[self.testidx[self.currenttestidx]]
@@ -313,8 +328,13 @@ class AntSampleDataset:
                         idx.append(i)
                         break
             self.classwiseidx.append(idx)
+    
+    def irm_init(self, env=0.01):
+        self.noise = []
+        for i in range(len(self.features)):
+            self.noise.append((np.random.rand(self.features[i].shape[0],self.features[i].shape[1])*2-1)*env)
 
-    def load_data(self, n_similar=0, return_label_names: bool = False, is_training=True, similar_size=2):
+    def load_data(self, n_similar=0, return_label_names: bool = False, is_training=True, similar_size=2, return_env=False):
         if is_training:
             labels = []
             idx = []
@@ -345,6 +365,8 @@ class AntSampleDataset:
             for r in rand_sampleid:
                 idx.append(self.trainidx[r])
             feat = []
+            if return_env:
+                feat2 = []
             for i in idx:
                 ifeat = self.features[i]
                 if self.sampling == 'random':
@@ -355,15 +377,24 @@ class AntSampleDataset:
                     sample_idx = np.arange(ifeat.shape[0])
                 else:
                     raise AssertionError('Not supported sampling !')
+                if return_env:
+                    ifeat2 = ifeat+self.noise[i]
+                    ifeat2 = ifeat2[sample_idx]
+                    feat2.append(ifeat2)
                 ifeat = ifeat[sample_idx]
                 feat.append(ifeat)
             feat = np.array(feat)
+            if return_env:
+                feat2 = np.array(feat2)
             labels = np.array([self.labels_multihot[i] for i in idx])
             if self.mode == "rgb":
                 feat = feat[..., : self.feature_size]
             elif self.mode == "flow":
                 feat = feat[..., self.feature_size:]
-            return feat, labels, rand_sampleid
+            if return_env:
+                return feat, labels, rand_sampleid, feat2
+            else:
+                return feat, labels, rand_sampleid
 
         else:
             labs = self.labels_multihot[self.testidx[self.currenttestidx]]

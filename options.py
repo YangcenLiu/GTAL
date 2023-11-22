@@ -68,10 +68,14 @@ parser.add_argument('--background_threshold', type=float, default=0.5)
 parser.add_argument('--similarity_threshold', type=float, default=0.8)
 parser.add_argument("--top_k_rat", type=int, default=10)
 
+# -------------scale adapter---------------
+parser.add_argument('--refine_alpha', type=float, default=0.0)
+parser.add_argument("--refine_scale", type=int, default=45)
+
 # -------------adv attack---------------
 parser.add_argument("--adv_attack", action="store_true", default=False)
 parser.add_argument("--epsilon", type=float, default=1e-5, help="epsilon for attack")
-parser.add_argument("--num_pgd_iter", type=int, default=40)
+parser.add_argument("--num_pgd_iter", type=int, default=10)
 
 # random resize
 parser.add_argument("--random_resize", action="store_true", default=False)
@@ -83,7 +87,7 @@ parser.add_argument("--model_num_classes", type=int, default=20)
 parser.add_argument("--class_mapping", type=str, default="class_mapping/t2a_class_mapping.json")
 
 # -------------multi scale setting-----------------
-parser.add_argument("--scales", nargs='+', type=int, default=[1])
+parser.add_argument("--scales", nargs='+', type=int, default=[13])
 
 
 # -------------sub_class setting-----------------

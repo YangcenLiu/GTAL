@@ -51,7 +51,7 @@ def visualize(
         idx_mapping = {int(k): int(v["thu idx"]) for k, v in class_mapping.items()}
         # dataset.filter_by_class_names(target_classes_names)
 
-    save_path = os.path.join(output_path, "ThumosIND")
+    save_path = os.path.join(output_path, "ddghacs")
 
     if "Thumos" in args.dataset_name:
         dmap_detect = ANETdetection(
@@ -115,7 +115,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "DELU",
+            "IND",
         )
 
         ax = plt.subplot(2, 1, 2)
@@ -128,7 +128,7 @@ def visualize(
             ax,
             duration,
             relaxation,
-            "DDG_NET",
+            "OOD",
         )
 
         plt.tight_layout()
@@ -194,7 +194,7 @@ def plot_single(
             label = row["label"]
 
             linestyle = (
-                "-" if thumos_json[label] not in gt_labels else "solid"
+                "-" if anet_plus_json[label] not in gt_labels else "solid"
             )  # Dashed line if label not in ground truth labels
 
             ax.plot(
@@ -233,7 +233,7 @@ def plot_single(
 
 if __name__ == "__main__":
     args = options.parser.parse_args()
-    name = "thumos"
+    name = "anet1.3"
 
     if name == "anet1.2":
         args.dataset_name = "ActivityNet1.2"
@@ -270,8 +270,8 @@ if __name__ == "__main__":
             args,
             result_path="proposal_results/T_IND_proposals.json",
             attn_path="proposal_results/T_IND_activation.pkl",
-            compare_result_path="proposal_results/IND_proposals.json",
-            compare_attn_path="proposal_results/IND_activation.pkl",
+            compare_result_path="proposal_results/OOD_proposals.json",
+            compare_attn_path="proposal_results/OOD_activation.pkl",
             class_mapping=args.class_mapping,
         )
     
@@ -288,10 +288,10 @@ if __name__ == "__main__":
         visualize(
             dataset,
             args,
-            result_path="proposal_results/H5_OOD_T_proposals.json",
-            attn_path="proposal_results/H5_OOD_T_activation.pkl",
-            compare_result_path="proposal_results/H5_OOD_A_proposals.json",
-            compare_attn_path="proposal_results/H5_OOD_A_activation.pkl",
+            result_path="proposal_results/HACS_DDG_IND_proposals.json",
+            attn_path="proposal_results/HACS_DDG_IND_activation.pkl",
+            compare_result_path="proposal_results/HACS_DDG_OOD_proposals.json",
+            compare_attn_path="proposal_results/HACS_DDG_OOD_activation.pkl",
             class_mapping=args.class_mapping,
         )
 

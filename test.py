@@ -3,6 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 import json
 import pickle
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
@@ -107,17 +108,86 @@ def IND_dataframe_to_json(
     with open(output_file, "w") as file:
         json.dump({"results": results}, file)
 
+def snippet_mAP(results, gt, class_mapping=None):
+
+    Acc = []
+    Attn = []
+    print(len(results))
+
+    for vname in results.keys():
+        cas = results[vname]["cas"]
+        cas = torch.argmax(cas, dim=-1, keepdim=True)
+
+        attn = results[vname]["attn"]
+        proposals = gt[gt["video-id"] == vname]
+
+        gt_p = torch.zeros_like(cas) + 100
+
+        for index, row in proposals.iterrows():
+            start = row["t-start"]
+            end = row["t-end"]
+            label = row["label"]
+            if start >= cas.size(1):
+                continue
+
+            if end >= cas.size(1):
+                end = cas.size(1)-1
+            
+            for t in range(start, end+1):
+                gt_p[:,t,0] = label
+        
+        for t in range(cas.size(1)):
+            if gt_p[:,t,0] == 100:
+                continue
+            if cas[:,t,0] == gt_p[:,t,0]:
+                Acc.append(1)
+            else:
+                Acc.append(0)
+            Attn.append(attn[:,t,0])
+    
+    print(sum(Acc)/len(Acc)*100)
+
+    # Define the number of bins or intervals
+    num_bins = 10
+
+    # Initialize lists to store accuracy for each interval
+    accuracy_by_bin = []
+
+    # Initialize the bin edges
+    bin_edges = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
+    print(bin_edges)
+
+    # Calculate accuracy in each bin
+    for i in range(num_bins):
+        lower_bound = bin_edges[i]
+        upper_bound = bin_edges[i + 1]
+        in_bin = [Acc[j] for j in range(len(Attn)) if lower_bound <= Attn[j] < upper_bound]
+        accuracy = sum(in_bin) / len(in_bin) * 100 if len(in_bin) > 0 else 0
+        accuracy_by_bin.append(accuracy)
+    print(accuracy_by_bin)
+
+    exit()
+
+# "video_test_0000814": {"subset": "test", "annotations": [{"segment": ["59.6", "64.2"], "label": "ThrowDiscus"}, 
+# {"segment": ["116.9", "120.2"], "label": "ThrowDiscus"}, {"segment": ["154.8", "160.4"], "label": "ThrowDiscus"}, 
+# {"segment": ["233.6", "240.1"], "label": "ThrowDiscus"}, {"segment": ["305.5", "321.1"], "label": "ThrowDiscus"}, 
+# {"segment": ["331.7", "337.1"], "label": "ThrowDiscus"}, {"segment": ["21.5", "24.1"], "label": "ThrowDiscus"}, 
+# {"segment": ["24.8", "29.8"], "label": "ThrowDiscus"}, {"segment": ["32.2", "34.8"], "label": "ThrowDiscus"}, 
+# {"segment": ["78.7", "85.6"], "label": "ThrowDiscus"}, {"segment": ["165.7", "168.3"], "label": "ThrowDiscus"}]},
+
+
 
 @torch.no_grad()
-def test(itr, dataset, args, model, device, save_activation=False, ind_class_mapping=False):
+def test(itr, dataset, args, model, device, save_activation=False, ind_class_mapping=False, snippet_classification=False):
     model.eval()
     done = False
     instance_logits_stack = []
     labels_stack = []
-    
+
     if "ActivityNet" in args.dataset_name and ind_class_mapping: #Thumos->Anet
         if "1.2" in args.dataset_name:
             class_mapping = json.load(open("class_mapping/t2a_class_mapping.json", "r"))
+            target_class_names = [v["anet name"] for v in class_mapping.values()]
         else:
             class_mapping = json.load(open("class_mapping/t2a_plus_class_mapping.json", "r"))
         target_class_indices = [
@@ -125,6 +195,7 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         ]
     elif "Thumos" in args.dataset_name and ind_class_mapping:  # Anet->Thumos
         class_mapping = json.load(open("class_mapping/a2t_class_mapping.json", "r"))
+        target_class_names = [v["thu name"] for v in class_mapping.values()]
         target_class_indices = [
             int(item["thu idx"]) for item in class_mapping.values()
         ]
@@ -135,7 +206,21 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         if dataset.currenttestidx % (len(dataset.testidx) // 10) == 0:
             print('Testing test data point %d of %d' % (dataset.currenttestidx, len(dataset.testidx)))
 
-        features, labels, vn, done = dataset.load_data(is_training=False)
+        if ind_class_mapping:
+            features, labels, vn, done, label_names = dataset.load_data(
+                is_training=False, return_label_names=True
+            )
+            # skip if the label is not in the target class names
+            keep = True
+            for label_name in label_names:
+                if label_name not in target_class_names:
+                    keep = False
+                    break
+            if not keep:
+                # continue
+                pass
+        else:
+            features, labels, vn, done = dataset.load_data(is_training=False)
 
         seq_len = [features.shape[0]]
         if seq_len == 0:
@@ -152,6 +237,24 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         tmp = F.softmax(torch.mean(torch.topk(logits, k=int(np.ceil(len(features) / 8)), dim=0)[0], dim=0),
                         dim=0).cpu().data.numpy()
 
+        ''' 
+        atn=outputs["attn"][0,:,0].cpu()
+        back=outputs["cas"].softmax(-1)[..., [-1]][0,:,0].cpu()
+        uct=outputs["uct"][:,0].cpu()
+
+        atn = np.array(atn)
+        back = np.array(back)
+        uct = np.array(uct)
+        plt.plot(range(len(atn)), 1-atn, c="r", label="1-atn")
+        plt.plot(range(len(back)), back, c="g", label="cas[:-1]")
+        plt.plot(range(len(uct)), uct, c="b", label="uct(cas[:20])")
+
+        plt.title(vn.decode("utf-8"))
+        plt.legend(loc="lower right")
+        plt.savefig("/data0/lixunsong/liuyangcen/CVPR2024/uct/"+vn.decode("utf-8")+".jpg")
+        plt.clf()
+        '''
+
         instance_logits_stack.append(tmp)
         labels_stack.append(labels)
 
@@ -164,7 +267,7 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         with open(
             "proposal_results/IND_activation.pkl", "wb"
         ) as file:
-            pickle.dump(results, file)
+            pickle.dump(results, file) # 'video_test_0001558': {'cas': tensor(), 'attn': tensor()}
 
         IND_dataframe_to_json(
             proposals,
@@ -180,6 +283,8 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         else:
             dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args)
         dmap_detect.prediction = proposals
+        if snippet_classification: # classification
+            smap = snippet_mAP(results, dmap_detect.ground_truth)
         dmap = dmap_detect.evaluate()
     else:
         iou = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
@@ -188,7 +293,9 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
         else:
             dmap_detect = ANETdetection(dataset.path_to_annotations, iou, args=args, subset='validation')
         dmap_detect.prediction = proposals
-        dmap = dmap_detect.evaluate()
+        if snippet_classification: # classification
+            smap = snippet_mAP(results, dmap_detect.ground_truth)
+        dmap = dmap_detect.evaluate() # localization
 
     if args.dataset_name == 'Thumos14':
         test_set = sio.loadmat('test_set_meta.mat')['test_videos'][0]
@@ -199,7 +306,11 @@ def test(itr, dataset, args, model, device, save_activation=False, ind_class_map
     cmap = cmAP(instance_logits_stack, labels_stack)
     print('Classification map %f' % cmap)
     print('||'.join(['map @ {} = {:.3f} '.format(iou[i], dmap[i] * 100) for i in range(len(iou))]))
-    print('mAP Avg ALL: {:.3f}'.format(sum(dmap) / len(iou) * 100))
+    
+    if 'Thumos14' in args.dataset_name:
+        print('mAP 0.1-0.7: {:.3f}'.format(sum(dmap[:7]) / 7 * 100))
+    else:
+        print('mAP 0.5-0.95: {:.3f}'.format(sum(dmap) / len(iou) * 100))
 
     return iou, dmap
 
@@ -211,11 +322,12 @@ def main_thumos2anet(ind_class_mapping):
 
 
     # Thumos 14
-    args.ckpt_path = "ckpt/best_delu_thumos.pkl"
-
-    # args.ckpt_path = 'ckpt/best_ddg.pkl'
+    # args.ckpt_path = "ckpt/best_delu_adapter.pkl"
+    args.ckpt_path = "ckpt/best_co2_thumos.pkl"
+    # args.ckpt_path = 'ckpt/best_ddg_thumos.pkl'
     # args.AWM = 'DDG_Net'
-    args.proposal_method = 'multiple_threshold_hamnet'
+
+    # args.proposal_method = 'multiple_threshold_hamnet'
 
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
@@ -224,14 +336,13 @@ def main_thumos2anet(ind_class_mapping):
     args.max_seqlen = 320
     args.scales = [1]
     args.class_mapping = "class_mapping/t2a_class_mapping.json"
-    args.use_model = "DELU"
+    args.use_model = "DELU_MULTI_SCALE"
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=True)
-    # model.load_state_dict(torch.load("work_dir/thumos_pyramid/ckpt/best_DELU_PYRAMID.pkl"), strict=True)
-
+    '''
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -244,18 +355,18 @@ def main_thumos2anet(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-
+    '''
     # Anet
     args.dataset_name = "ActivityNet1.2"
     args.dataset = "AntSampleDataset"
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [13] # [1, 3, 7, 15]
+    # args.scales = [1] # [1, 3, 7, 15]
     args.mapping = "class_mapping/t2a_class_mapping.json"
 
-    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    # model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    # model.load_state_dict(torch.load(args.ckpt_path), strict=False)
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     iou, dmap, mAP_Avg_ALL = ood_test(
@@ -287,7 +398,10 @@ def main_anet2thumos(ind_class_mapping):
 
     # Anet
     args.class_mapping = "class_mapping/a2t_class_mapping.json"
-    args.ckpt_path = "ckpt/best_delu_act.pkl"
+    args.ckpt_path = "ckpt/best_co2_act.pkl" # "ckpt/best_delu_act.pkl" # "ckpt/best_ddg_act.pkl" # "ckpt/best_base_act.pkl"
+    # args.AWM = 'DDG_Net'
+    # args.proposal_method = 'multiple_threshold_hamnet'
+
     args.dataset_name = "ActivityNet1.2"
     args.dataset = "AntSampleDataset"
     args.num_class = 100
@@ -295,14 +409,12 @@ def main_anet2thumos(ind_class_mapping):
     args.max_seqlen = 60
     args.scales = [13] # 13
 
+    args.use_model = "DELU_MULTI_SCALE"
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
-    # model.load_state_dict(torch.load("/data0/lixunsong/liuyangcen/ECCV2022-DELU/work_dir/thumos_pyramid/ckpt/best_DELU_PYRAMID.pkl"), strict=False)
-    
     
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
-
     print(
     "||".join(
         [
@@ -313,17 +425,16 @@ def main_anet2thumos(ind_class_mapping):
     )
     ood_max_map = np.array(dmap)
     print('ActivityNet1.2: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
-    
+    exit()
     # Thumos 14
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
     args.num_class = 20
     args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
     args.max_seqlen = 320
-    args.scales = [17]
 
-    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    # model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    # model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
@@ -347,7 +458,7 @@ def main_anet2thumos(ind_class_mapping):
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
     
-def main_thumos2anet_plus(ind_class_mapping):
+def main_thumos2hacs(ind_class_mapping):
 
     print("Thumos14 -> HACS")
 
@@ -356,7 +467,13 @@ def main_thumos2anet_plus(ind_class_mapping):
 
 
     # Thumos 14
-    args.ckpt_path = "ckpt/best_delu_thumos.pkl"
+    # args.ckpt_path = "/data0/lixunsong/liuyangcen/ECCV2022-DELU/work_dir/thumos_delu_pgd/ckpt/best_DELU.pkl" # "ckpt/best_base_thumos.pkl"
+
+    args.ckpt_path = "ckpt/best_ddg_thumos.pkl"
+    args.AWM = 'DDG_Net'
+    args.proposal_method = 'multiple_threshold_hamnet'
+    args.use_model = "DELU_DDG"
+
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
     args.num_class = 20
@@ -370,7 +487,7 @@ def main_thumos2anet_plus(ind_class_mapping):
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
     
-
+    '''
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -383,7 +500,7 @@ def main_thumos2anet_plus(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-
+    '''
 
     # Anet
     args.dataset_name = "ActivityNet1.3"
@@ -393,8 +510,8 @@ def main_thumos2anet_plus(ind_class_mapping):
     args.max_seqlen = 100
     args.scales = [1]
 
-    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    # model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    # model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
@@ -429,13 +546,18 @@ def main_anet2hacs(ind_class_mapping):
 
     # Anet
     args.class_mapping = "class_mapping/a2a_plus_class_mapping.json"
-    args.ckpt_path = "ckpt/best_delu_act.pkl"
+    args.ckpt_path = "ckpt/best_ddg_act.pkl"
+
+    args.AWM = 'DDG_Net'
+    args.proposal_method = 'multiple_threshold_hamnet'
+    args.use_model = "DELU_DDG_ACT"
+
     args.dataset_name = "ActivityNet1.2"
     args.dataset = "AntSampleDataset"
     args.num_class = 100
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
     args.max_seqlen = 60
-    args.scales = [13] # 13
+    args.scales = [7] # 13
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
@@ -460,10 +582,10 @@ def main_anet2hacs(ind_class_mapping):
     args.num_class = 9
     args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
     args.max_seqlen = 300
-    args.scales = [1,3,5]
+    args.scales = [13]
 
-    model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
-    model.load_state_dict(torch.load(args.ckpt_path), strict=False)
+    # model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
+    # model.load_state_dict(torch.load(args.ckpt_path), strict=False)
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
@@ -489,8 +611,8 @@ def main_anet2hacs(ind_class_mapping):
 
 
 if __name__ == '__main__':
-    ind_class_mapping = False # True
-    main_thumos2anet(ind_class_mapping)
+    ind_class_mapping = False
+    # main_thumos2anet(ind_class_mapping)
     # main_anet2thumos(ind_class_mapping)
-    # main_thumos2anet_plus(ind_class_mapping)
-    # main_anet2hacs(ind_class_mapping)
+    # main_thumos2hacs(ind_class_mapping)
+    main_anet2hacs(ind_class_mapping)

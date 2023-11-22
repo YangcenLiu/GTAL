@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+python main.py \
+--model_name CO2NET \
+--seed 0 \
+--alpha_edl 1.3 \
+--alpha_uct_guide 0.4 \
+--amplitude 0.7 \
+--alpha2 0.4 \
+--eval_interval 50 \
+--max_seqlen 320 \
+--lr 0.00005 \
+--k 7 \
+--dataset_name Thumos14reduced \
+--path_dataset /data0/lixunsong/Datasets/THUMOS14 \
+--num_class 20 \
+--use_model CO2NET \
+--max_iter 5000 \
+--dataset SampleDataset \
+--weight_decay 0.001 \
+--AWM BWA_fusion_dropout_feat_v2 \
+--work_dir work_dir/t-ind-co2 \

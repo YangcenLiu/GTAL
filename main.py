@@ -41,11 +41,15 @@ if __name__ == '__main__':
     device = torch.device("cuda")
     dataset = getattr(wsad_dataset, args.dataset)(args)
     ood_dataset = None
+    hacs_dataset = None
     if 'Thumos' in args.dataset_name:
         max_map = [0] * 9
         ood_max_map = [0] * 10
+        hacs_max_map = [0] * 10
     else:
         max_map = [0] * 10
+        ood_max_map = [0] * 9
+        hacs_max_map = [0] * 10
     log_model_path = os.path.join(args.work_dir, 'logs', args.model_name)
     ckpt_path = os.path.join(args.work_dir, 'ckpt')
     if not os.path.exists(ckpt_path):
@@ -65,9 +69,9 @@ if __name__ == '__main__':
         loss = train(itr, dataset, args, model, optimizer, device)
         total_loss += loss
         if itr % args.eval_interval == 0 and not itr == 0:
-            if "ActivityNet" in args.dataset_name and itr<12000 and itr % 1000 != 0:
+            if "ActivityNet" in args.dataset_name and itr<18000 and itr % 4000 != 0:
                 continue
-            if "Thumos" in args.dataset_name and itr<2500 and itr % 500 != 0:
+            if "Thumos" in args.dataset_name and itr<3000 and itr % 500 != 0:
                 continue
             print("")
             print('Iteration: %d, Loss: %.5f' % (itr, total_loss / args.eval_interval))
@@ -107,15 +111,34 @@ if __name__ == '__main__':
                     save_activation=False,
                     itr=itr,
                 )
+
+                args.dataset_name = "ActivityNet1.3"
+                args.dataset = "AntPlusSampleDataset"
+                args.num_class = 9
+                args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
+
+                if hacs_dataset is None:
+                    hacs_dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+
+                hacs_iou, hacs_dmap, hacs_mAP_Avg_ALL = ood_test(
+                                hacs_dataset,
+                                args,
+                                model,
+                                device,
+                                class_mapping="class_mapping/t2a_plus_class_mapping.json",
+                                save_activation=False,
+                                itr=itr,
+                            )
+
                 args.dataset_name = "Thumos14reduced"
                 args.dataset = ("SampleDataset",)
                 args.num_class = 20
                 args.path_dataset = "/data0/lixunsong/Datasets/THUMOS14"
                 args.max_seqlen = 320
 
-                # cond = np.mean(ood_dmap) > np.mean(ood_max_map)
                 if cond:
                     ood_max_map = ood_dmap
+                    hacs_max_map = hacs_dmap
                 print(
                 "||".join(
                     [
@@ -125,7 +148,17 @@ if __name__ == '__main__':
                     )
                 )
                 ood_max_map = np.array(ood_max_map)
-                print('mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+                print('anet: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
+
+                print(
+                "||".join(
+                    [
+                        "MAX map @ {} = {:.3f} ".format(hacs_iou[i], hacs_dmap[i] * 100)
+                        for i in range(10)
+                    ]
+                    )
+                )
+                print('HACS: mAP Avg 0.5-0.95: {}'.format(np.mean(hacs_max_map[:10]) * 100))
             
             if "activitynet" in args.dataset_name.lower():  # only support thumos14 for now
 
@@ -146,6 +179,24 @@ if __name__ == '__main__':
                     save_activation=False,
                     itr=itr,
                 )
+
+                args.dataset_name = "ActivityNet1.3"
+                args.dataset = "AntPlusSampleDataset"
+                args.num_class = 9
+                args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.3"
+
+                if hacs_dataset is None:
+                    hacs_dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
+
+                hacs_iou, hacs_dmap, hacs_mAP_Avg_ALL = ood_test(
+                                hacs_dataset,
+                                args,
+                                model,
+                                device,
+                                class_mapping="class_mapping/a2a_plus_class_mapping.json",
+                                save_activation=False,
+                                itr=itr,
+                            )
                 
                 args.dataset_name = "ActivityNet1.2"
                 args.dataset = "AntSampleDataset"
@@ -153,9 +204,9 @@ if __name__ == '__main__':
                 args.path_dataset = "/data0/lixunsong/Datasets/ActivityNet1.2/"
                 args.max_seqlen = 60
 
-                # cond = np.mean(ood_dmap) > np.mean(ood_max_map)
                 if cond:
                     ood_max_map = ood_dmap
+                    hacs_max_map = hacs_dmap
                 print(
                 "||".join(
                     [
@@ -164,8 +215,20 @@ if __name__ == '__main__':
                     ]
                     )
                 )
-                ood_max_map = np.array(ood_max_map)
-                print('mAP Avg 0.1-0.7: {}'.format(np.mean(ood_max_map[:7]) * 100))
+                print('thumos mAP Avg 0.1-0.7: {}'.format(np.mean(ood_max_map[:7]) * 100))
+
+                print(
+                "||".join(
+                    [
+                        "MAX map @ {} = {:.3f} ".format(hacs_iou[i], hacs_dmap[i] * 100)
+                        for i in range(len(iou))
+                    ]
+                    )
+                )
+                print('HACS: mAP Avg 0.5-0.95: {}'.format(np.mean(hacs_max_map[:10]) * 100))
+
+
             
+                    
             
             print("------------------pid: {}--------------------".format(os.getpid()))
