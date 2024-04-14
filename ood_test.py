@@ -355,7 +355,6 @@ def ood_test(
         dmap = dmap_detect.evaluate()
         if snippet_classification: # classification
             smap = snippet_mAP(results, dmap_detect.ground_truth)
-        dmap = dmap_detect.evaluate()
     else:
         iou = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 

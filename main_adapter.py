@@ -68,7 +68,7 @@ if __name__ == '__main__':
     for itr in tqdm(range(args.max_iter), ncols=80):
         loss = train_adapter(itr, dataset, args, model, optimizer, device)
         total_loss += loss
-        if itr % args.eval_interval == 0 and itr>10: #  itr>150
+        if itr % args.eval_interval == 0: # and itr>150: #  itr>150
             print("")
             print('Iteration: %d, Loss: %.5f' % (itr, total_loss / args.eval_interval))
             total_loss = 0

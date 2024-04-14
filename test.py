@@ -322,12 +322,12 @@ def main_thumos2anet(ind_class_mapping):
 
 
     # Thumos 14
+    args.ckpt_path = "ckpt/best_delu_thumos.pkl"
     # args.ckpt_path = "ckpt/best_delu_adapter.pkl"
-    args.ckpt_path = "ckpt/best_co2_thumos.pkl"
     # args.ckpt_path = 'ckpt/best_ddg_thumos.pkl'
     # args.AWM = 'DDG_Net'
 
-    # args.proposal_method = 'multiple_threshold_hamnet'
+    args.proposal_method = 'multiple_threshold_hamnet'
 
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
@@ -336,13 +336,13 @@ def main_thumos2anet(ind_class_mapping):
     args.max_seqlen = 320
     args.scales = [1]
     args.class_mapping = "class_mapping/t2a_class_mapping.json"
-    args.use_model = "DELU_MULTI_SCALE"
+    args.use_model = "DELU"
 
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
 
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=True)
-    '''
+
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -355,7 +355,7 @@ def main_thumos2anet(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-    '''
+    exit()
     # Anet
     args.dataset_name = "ActivityNet1.2"
     args.dataset = "AntSampleDataset"
@@ -398,9 +398,9 @@ def main_anet2thumos(ind_class_mapping):
 
     # Anet
     args.class_mapping = "class_mapping/a2t_class_mapping.json"
-    args.ckpt_path = "ckpt/best_co2_act.pkl" # "ckpt/best_delu_act.pkl" # "ckpt/best_ddg_act.pkl" # "ckpt/best_base_act.pkl"
+    args.ckpt_path = "ckpt/best_delu_adapter_act.pkl" # "ckpt/best_delu_act.pkl" # "ckpt/best_ddg_act.pkl" # "ckpt/best_base_act.pkl"
     # args.AWM = 'DDG_Net'
-    # args.proposal_method = 'multiple_threshold_hamnet'
+    args.proposal_method = 'multiple_threshold_hamnet'
 
     args.dataset_name = "ActivityNet1.2"
     args.dataset = "AntSampleDataset"
@@ -409,11 +409,11 @@ def main_anet2thumos(ind_class_mapping):
     args.max_seqlen = 60
     args.scales = [13] # 13
 
-    args.use_model = "DELU_MULTI_SCALE"
+    args.use_model = "DELU"
     dataset = getattr(wsad_dataset, args.dataset)(args, classwise_feature_mapping=False)
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
-    
+    '''
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -425,7 +425,7 @@ def main_anet2thumos(ind_class_mapping):
     )
     ood_max_map = np.array(dmap)
     print('ActivityNet1.2: mAP Avg 0.5-0.95: {}'.format(np.mean(ood_max_map[:10]) * 100))
-    exit()
+    '''
     # Thumos 14
     args.dataset_name = "Thumos14reduced"
     args.dataset = "SampleDataset"
@@ -487,7 +487,7 @@ def main_thumos2hacs(ind_class_mapping):
     model = getattr(models, args.use_model)(dataset.feature_size, dataset.num_class, opt=args).to(device)
     model.load_state_dict(torch.load(args.ckpt_path), strict=False)
     
-    '''
+
     iou, dmap = test(-1, dataset, args, model, device, save_activation=True, ind_class_mapping=ind_class_mapping)
     print(
     "||".join(
@@ -500,7 +500,6 @@ def main_thumos2hacs(ind_class_mapping):
     print('Thumos14: mAP Avg 0.1-0.5: {}, mAP Avg 0.1-0.7: {}, mAP Avg ALL: {}'.format(np.mean(dmap[:5]) * 100,
                                                                              np.mean(dmap[:7]) * 100,
                                                                              np.mean(dmap) * 100))
-    '''
 
     # Anet
     args.dataset_name = "ActivityNet1.3"
@@ -612,7 +611,7 @@ def main_anet2hacs(ind_class_mapping):
 
 if __name__ == '__main__':
     ind_class_mapping = False
-    # main_thumos2anet(ind_class_mapping)
+    main_thumos2anet(ind_class_mapping)
     # main_anet2thumos(ind_class_mapping)
     # main_thumos2hacs(ind_class_mapping)
-    main_anet2hacs(ind_class_mapping)
+    # main_anet2hacs(ind_class_mapping)

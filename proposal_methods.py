@@ -159,6 +159,7 @@ def multiple_threshold_hamnet(vid_name, data_dict):
     for class_id in proposal_dict.keys():
         final_proposals.append(
             utils.soft_nms(proposal_dict[class_id], 0.7, sigma=0.3))
+            # utils.nms(proposal_dict[class_id], 0.5))
     # self.final_res["results"][vid_name[0]] = utils.result2json(
     # final_proposals, class_dict)
 

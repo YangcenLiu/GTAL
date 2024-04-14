@@ -274,8 +274,8 @@ class DELU_Adapter(torch.nn.Module):
 
     def adapter_update(self, inputs):
 
-        self.student.train()
-        self.dropout_ratio = 0.7
+        # self.student.eval()
+        # self.dropout_ratio = 0.1
 
         with torch.no_grad():
             t_outputs = self.teacher(inputs)
@@ -446,7 +446,7 @@ class DELU_Adapter(torch.nn.Module):
         self.b += 1
         '''
         # 
-        total_loss = 1.0 * cas_loss + 0.1*cal_loss # 1.0*att_loss # + 1*cal_loss +1*cas_loss # + 1.0*atn_loss  # + loss_mil_supp.mean() + loss_mil_orig.mean()) # + 1*cal_loss # +0.1*atn_loss  # 0.1*atn_loss + 
+        total_loss = 1.0 * cas_loss + 0.01*cal_loss # 1.0*att_loss +  # 1.0*att_loss + 1.0 * cas_loss + 0.01*cal_loss # 1.0*att_loss # + 1*cal_loss +1*cas_loss # + 1.0*atn_loss  # + loss_mil_supp.mean() + loss_mil_orig.mean()) # + 1*cal_loss # +0.1*atn_loss  # 0.1*atn_loss + 
 
         loss_dict = {
             'total_loss': total_loss,
